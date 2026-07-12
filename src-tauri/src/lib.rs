@@ -1,6 +1,8 @@
 pub mod db;
 pub mod model;
 pub mod categories;
+pub mod pieces;
+
 
 
 
