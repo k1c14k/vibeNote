@@ -17,16 +17,18 @@ Ensure you have the following installed on your development machine:
 
 ---
 
-## 1. Local AI Model Download (CRITICAL)
+## 1. Local AI Model & Tokenizer Download (CRITICAL)
 
-Because embedding model weights are large binary blobs (~118MB), they are not included in the git repository. **You must download the model file manually before compiling the application.**
+Because embedding model weights and tokenizer configurations are large binary blobs (~118MB and ~16MB respectively), they are not included in the git repository. **You must download both files manually before compiling the application.**
 
 1. Download the quantized ONNX model weights from Hugging Face:
    - **Download Link**: [model_quantized.onnx](https://huggingface.co/Xenova/paraphrase-multilingual-MiniLM-L12-v2/resolve/main/onnx/model_quantized.onnx)
-2. Save or copy the file as **`model.onnx`** inside the **`src-tauri/`** folder:
-   - Target location: `src-tauri/model.onnx`
+   - Save or copy the file as **`model.onnx`** inside the **`src-tauri/`** folder: `src-tauri/model.onnx`
+2. Download the tokenizer configuration file from Hugging Face:
+   - **Download Link**: [tokenizer.json](https://huggingface.co/Xenova/paraphrase-multilingual-MiniLM-L12-v2/resolve/main/tokenizer.json)
+   - Save or copy the file as **`tokenizer.json`** inside the **`src-tauri/`** folder: `src-tauri/tokenizer.json`
 
-If `src-tauri/model.onnx` is missing at build time, the Rust compilation will fail with a file-not-found error because the build uses `include_bytes!` to bundle the weights directly inside the final binary.
+If either `src-tauri/model.onnx` or `src-tauri/tokenizer.json` is missing at build time, the Rust compilation will fail with a file-not-found error because the build uses `include_bytes!` to bundle the weights and config directly inside the final binary.
 
 ---
 
