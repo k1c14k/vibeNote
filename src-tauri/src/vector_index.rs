@@ -168,7 +168,7 @@ pub fn query_pieces(
     );
 
     if options.collection_id.is_some() {
-        sql.push_str(" AND p.category_id = ?");
+        sql.push_str(" AND p.collection_id = ?");
     }
 
     // Collect surviving piece IDs
@@ -210,7 +210,7 @@ pub fn query_pieces(
 mod tests {
     use crate::model::init_model;
     use crate::pieces::ingest_text_piece;
-    use crate::categories::create_category;
+    use crate::collections::create_collection;
     use super::*;
     use crate::db::init_db;
     use uuid::Uuid;
@@ -285,13 +285,13 @@ mod tests {
         let conn = init_db(&db_path).unwrap();
 
         // Register a fake piece in pieces first due to foreign key constraints
-        // Let's create a category
+        // Let's create a collection
         conn.execute(
-            "INSERT INTO categories (id, name, type, folder_path) VALUES ('cat-1', 'Notes', 'text', 'notes');",
+            "INSERT INTO collections (id, name, type, folder_path) VALUES ('cat-1', 'Notes', 'text', 'notes');",
             [],
         ).unwrap();
         conn.execute(
-            "INSERT INTO pieces (id, category_id, created_at, is_active) VALUES ('piece-1', 'cat-1', '2026-07-12T17:00:00Z', 1);",
+            "INSERT INTO pieces (id, collection_id, created_at, is_active) VALUES ('piece-1', 'cat-1', '2026-07-12T17:00:00Z', 1);",
             [],
         ).unwrap();
 
@@ -316,7 +316,7 @@ mod tests {
         conn: Connection,
         session: ort::session::Session,
         index: Index,
-        category_id: String,
+        collection_id: String,
     }
 
     impl QueryTestEnv {
@@ -328,12 +328,12 @@ mod tests {
             let db_path = vibe_root.join("vibe.db");
             let conn = init_db(&db_path).unwrap();
 
-            let cat = create_category(&conn, &vibe_root, "Notes", "text", "notes").unwrap();
+            let cat = create_collection(&conn, &vibe_root, "Notes", "text", "notes").unwrap();
 
             let session = init_model().expect("Failed to init model");
             let index = load_or_create_index(&vibe_root).expect("Failed to load/create index");
 
-            QueryTestEnv { vibe_root, conn, session, index, category_id: cat.id }
+            QueryTestEnv { vibe_root, conn, session, index, collection_id: cat.id }
         }
     }
 
@@ -348,13 +348,13 @@ mod tests {
         let mut env = QueryTestEnv::new("ranked");
 
         // Ingest 3 semantically distinct pieces
-        ingest_text_piece(&mut env.conn, &env.vibe_root, &env.category_id,
+        ingest_text_piece(&mut env.conn, &env.vibe_root, &env.collection_id,
             "The Eiffel Tower is a famous landmark in Paris, France.",
             None, &[], &mut env.session, &env.index).unwrap();
-        let target = ingest_text_piece(&mut env.conn, &env.vibe_root, &env.category_id,
+        let target = ingest_text_piece(&mut env.conn, &env.vibe_root, &env.collection_id,
             "Rust is a systems programming language focused on safety and performance.",
             None, &[], &mut env.session, &env.index).unwrap();
-        ingest_text_piece(&mut env.conn, &env.vibe_root, &env.category_id,
+        ingest_text_piece(&mut env.conn, &env.vibe_root, &env.collection_id,
             "Chocolate cake is a delicious dessert enjoyed worldwide.",
             None, &[], &mut env.session, &env.index).unwrap();
 
@@ -380,9 +380,9 @@ mod tests {
         let mut env = QueryTestEnv::new("collection_filter");
 
         // Create a second collection
-        let cat2 = create_category(&env.conn, &env.vibe_root, "Work Notes", "text", "work_notes").unwrap();
+        let cat2 = create_collection(&env.conn, &env.vibe_root, "Work Notes", "text", "work_notes").unwrap();
 
-        let p1 = ingest_text_piece(&mut env.conn, &env.vibe_root, &env.category_id,
+        let p1 = ingest_text_piece(&mut env.conn, &env.vibe_root, &env.collection_id,
             "Rust programming language overview.",
             None, &[], &mut env.session, &env.index).unwrap();
         let _p2 = ingest_text_piece(&mut env.conn, &env.vibe_root, &cat2.id,
@@ -394,7 +394,7 @@ mod tests {
             &env.vibe_root,
             &mut env.session,
             "Rust programming",
-            QueryOptions { collection_id: Some(env.category_id.clone()), top_k: 10, ..Default::default() },
+            QueryOptions { collection_id: Some(env.collection_id.clone()), top_k: 10, ..Default::default() },
         ).unwrap();
 
         assert!(!results.is_empty());
@@ -407,7 +407,7 @@ mod tests {
     fn test_query_excludes_tombstoned() {
         let mut env = QueryTestEnv::new("tombstone");
 
-        let p = ingest_text_piece(&mut env.conn, &env.vibe_root, &env.category_id,
+        let p = ingest_text_piece(&mut env.conn, &env.vibe_root, &env.collection_id,
             "Rust is a great systems language.",
             None, &[], &mut env.session, &env.index).unwrap();
 
@@ -447,9 +447,9 @@ mod tests {
     fn test_query_no_collection_returns_all() {
         let mut env = QueryTestEnv::new("all_collections");
 
-        let cat2 = create_category(&env.conn, &env.vibe_root, "Work Notes", "text", "work_notes").unwrap();
+        let cat2 = create_collection(&env.conn, &env.vibe_root, "Work Notes", "text", "work_notes").unwrap();
 
-        let p1 = ingest_text_piece(&mut env.conn, &env.vibe_root, &env.category_id,
+        let p1 = ingest_text_piece(&mut env.conn, &env.vibe_root, &env.collection_id,
             "Rust programming language overview.",
             None, &[], &mut env.session, &env.index).unwrap();
         let p2 = ingest_text_piece(&mut env.conn, &env.vibe_root, &cat2.id,

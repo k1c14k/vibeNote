@@ -74,7 +74,7 @@ pub fn contact_to_text(contact: &ContactJson) -> String {
 pub fn ingest_contact_piece(
     conn: &mut Connection,
     vibe_path: &Path,
-    category_id: &str,
+    collection_id: &str,
     contact: &ContactJson,
     uri: Option<&str>,
     session: &mut Session,
@@ -84,35 +84,35 @@ pub fn ingest_contact_piece(
     let nl_text = contact_to_text(contact);
     crate::model::validate_limits(&nl_text, None, None)?;
 
-    // 1. Resolve category info
+    // 1. Resolve collection info
     let (folder_path, cat_type): (String, String) = conn.query_row(
-        "SELECT folder_path, type FROM categories WHERE id = ?;",
-        [category_id],
+        "SELECT folder_path, type FROM collections WHERE id = ?;",
+        [collection_id],
         |row| Ok((row.get(0)?, row.get(1)?)),
     ).map_err(|e| match e {
-        rusqlite::Error::QueryReturnedNoRows => PieceError::CategoryNotFound(category_id.to_string()),
+        rusqlite::Error::QueryReturnedNoRows => PieceError::CollectionNotFound(collection_id.to_string()),
         _ => PieceError::Db(e),
     })?;
 
-    // 2. Validate category type is 'contacts'
+    // 2. Validate collection type is 'contacts'
     if cat_type != "contacts" {
-        return Err(ContactError::Piece(PieceError::InvalidCategoryType(
-            category_id.to_string(),
+        return Err(ContactError::Piece(PieceError::InvalidCollectionType(
+            collection_id.to_string(),
             cat_type,
             "contacts".to_string(),
         )));
     }
 
-    // 3. Verify category directory exists
-    let category_dir = vibe_path.join(&folder_path);
-    if !category_dir.exists() || !category_dir.is_dir() {
-        return Err(ContactError::Piece(PieceError::CategoryFolderMissing(folder_path)));
+    // 3. Verify collection directory exists
+    let collection_dir = vibe_path.join(&folder_path);
+    if !collection_dir.exists() || !collection_dir.is_dir() {
+        return Err(ContactError::Piece(PieceError::CollectionFolderMissing(folder_path)));
     }
 
     // 4. Generate Piece ID and output file path (.vcf)
     let piece_id = Uuid::new_v4().to_string();
     let file_name = format!("{}.vcf", piece_id);
-    let piece_file_path = category_dir.join(&file_name);
+    let piece_file_path = collection_dir.join(&file_name);
 
     // 5. Serialize contact and write to disk
     let vcard_content = serialize_vcard(contact);
@@ -132,8 +132,8 @@ pub fn ingest_contact_piece(
 
         // Insert piece record
         tx.execute(
-            "INSERT INTO pieces (id, category_id, uri, created_at, is_active) VALUES (?, ?, ?, ?, 1);",
-            rusqlite::params![&piece_id, category_id, uri, &created_at],
+            "INSERT INTO pieces (id, collection_id, uri, created_at, is_active) VALUES (?, ?, ?, ?, 1);",
+            rusqlite::params![&piece_id, collection_id, uri, &created_at],
         )?;
 
         // Extract metadata: Name (FN), Email, Phone, Organization, Title
@@ -192,7 +192,7 @@ pub fn ingest_contact_piece(
     match run_tx_sequence(conn, &mut vector_id_opt).map_err(ContactError::Piece) {
         Ok(created_at) => Ok(Piece {
             id: piece_id,
-            category_id: category_id.to_string(),
+            collection_id: collection_id.to_string(),
             uri: uri.map(String::from),
             created_at,
             is_active: true,
@@ -220,14 +220,14 @@ pub fn ingest_contact_piece(
 mod tests {
     use super::*;
     use crate::db::init_db;
-    use crate::categories::create_category;
+    use crate::collections::create_collection;
     use std::fs;
     use std::path::PathBuf;
 
     struct TestEnv {
         vibe_root: PathBuf,
         conn: Connection,
-        category_id: String,
+        collection_id: String,
         session: ort::session::Session,
         index: usearch::Index,
     }
@@ -241,13 +241,13 @@ mod tests {
             let db_path = vibe_root.join("vibe.db");
             let conn = init_db(&db_path).unwrap();
 
-            let cat = create_category(&conn, &vibe_root, "My Contacts", "contacts", "contacts").unwrap();
+            let cat = create_collection(&conn, &vibe_root, "My Contacts", "contacts", "contacts").unwrap();
 
             let session = crate::model::init_model().expect("Failed to init model in TestEnv");
             let index = crate::vector_index::load_or_create_index(&vibe_root)
                 .expect("Failed to load/create vector index in TestEnv");
 
-            TestEnv { vibe_root, conn, category_id: cat.id, session, index }
+            TestEnv { vibe_root, conn, collection_id: cat.id, session, index }
         }
     }
 
@@ -297,7 +297,7 @@ mod tests {
         let piece = ingest_contact_piece(
             &mut env.conn,
             &env.vibe_root,
-            &env.category_id,
+            &env.collection_id,
             &contact,
             Some("file:///doc/contact1.json"),
             &mut env.session,
@@ -305,7 +305,7 @@ mod tests {
         ).unwrap();
 
         // 1. Verify returned piece metadata
-        assert_eq!(piece.category_id, env.category_id);
+        assert_eq!(piece.collection_id, env.collection_id);
         assert_eq!(piece.uri, Some("file:///doc/contact1.json".to_string()));
         assert!(piece.is_active);
 
@@ -343,11 +343,11 @@ mod tests {
     }
 
     #[test]
-    fn test_ingest_contact_invalid_category_type() {
+    fn test_ingest_contact_invalid_collection_type() {
         let mut env = TestEnv::new("invalid_cat");
 
-        // Create a 'text' category
-        let text_cat = create_category(&env.conn, &env.vibe_root, "My Notes", "text", "notes").unwrap();
+        // Create a 'text' collection
+        let text_cat = create_collection(&env.conn, &env.vibe_root, "My Notes", "text", "notes").unwrap();
 
         let contact = ContactJson {
             first_name: None,
@@ -369,7 +369,7 @@ mod tests {
             &env.index,
         ).unwrap_err();
 
-        assert!(matches!(err, ContactError::Piece(PieceError::InvalidCategoryType(_, _, _))));
+        assert!(matches!(err, ContactError::Piece(PieceError::InvalidCollectionType(_, _, _))));
     }
 
     #[test]
@@ -401,7 +401,7 @@ mod tests {
         let err = ingest_contact_piece(
             &mut env.conn,
             &env.vibe_root,
-            &env.category_id,
+            &env.collection_id,
             &contact,
             None,
             &mut env.session,

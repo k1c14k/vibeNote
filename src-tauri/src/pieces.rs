@@ -10,14 +10,14 @@ pub enum PieceError {
     Db(#[from] rusqlite::Error),
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
-    #[error("Category with ID '{0}' not found in database")]
-    CategoryNotFound(String),
+    #[error("Collection with ID '{0}' not found in database")]
+    CollectionNotFound(String),
     #[error("Piece with ID '{0}' not found in database")]
     PieceNotFound(String),
-    #[error("Category with ID '{0}' is of type '{1}', expected '{2}'")]
-    InvalidCategoryType(String, String, String),
-    #[error("Category folder '{0}' does not exist on disk")]
-    CategoryFolderMissing(String),
+    #[error("Collection with ID '{0}' is of type '{1}', expected '{2}'")]
+    InvalidCollectionType(String, String, String),
+    #[error("Collection folder '{0}' does not exist on disk")]
+    CollectionFolderMissing(String),
     #[error("Text exceeds character limit of {0} (actual: {1})")]
     CharLimitExceeded(usize, usize),
     #[error("Text exceeds token limit of {0} (actual: {1})")]
@@ -33,7 +33,7 @@ pub enum PieceError {
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone, PartialEq, Eq)]
 pub struct Piece {
     pub id: String,
-    pub category_id: String,
+    pub collection_id: String,
     pub uri: Option<String>,
     pub created_at: String,
     pub is_active: bool,
@@ -43,14 +43,14 @@ pub struct Piece {
 ///
 /// * `conn` - SQLite database connection.
 /// * `vibe_path` - Root path of the Vibe workspace.
-/// * `category_id` - The ID of the category this piece belongs to.
+/// * `collection_id` - The ID of the collection this piece belongs to.
 /// * `content` - The raw markdown or plain text content.
 /// * `uri` - Optional source URI (e.g. file path or URL).
 /// * `metadata` - List of key-value metadata strings to register for this piece.
 pub fn ingest_text_piece(
     conn: &mut Connection,
     vibe_path: &Path,
-    category_id: &str,
+    collection_id: &str,
     content: &str,
     uri: Option<&str>,
     metadata: &[(&str, &str)],
@@ -60,31 +60,31 @@ pub fn ingest_text_piece(
     // 0. Validate fail-fast character and precise token limits
     crate::model::validate_limits(content, None, None)?;
 
-    // 1. Resolve category from SQLite
+    // 1. Resolve collection from SQLite
     let (folder_path, cat_type): (String, String) = conn.query_row(
-        "SELECT folder_path, type FROM categories WHERE id = ?;",
-        [category_id],
+        "SELECT folder_path, type FROM collections WHERE id = ?;",
+        [collection_id],
         |row| Ok((row.get(0)?, row.get(1)?)),
     ).map_err(|e| match e {
-        rusqlite::Error::QueryReturnedNoRows => PieceError::CategoryNotFound(category_id.to_string()),
+        rusqlite::Error::QueryReturnedNoRows => PieceError::CollectionNotFound(collection_id.to_string()),
         _ => PieceError::Db(e),
     })?;
 
-    // 2. Validate category type is 'text'
+    // 2. Validate collection type is 'text'
     if cat_type != "text" {
-        return Err(PieceError::InvalidCategoryType(category_id.to_string(), cat_type, "text".to_string()));
+        return Err(PieceError::InvalidCollectionType(collection_id.to_string(), cat_type, "text".to_string()));
     }
 
-    // 3. Verify category directory exists
-    let category_dir = vibe_path.join(&folder_path);
-    if !category_dir.exists() || !category_dir.is_dir() {
-        return Err(PieceError::CategoryFolderMissing(folder_path));
+    // 3. Verify collection directory exists
+    let collection_dir = vibe_path.join(&folder_path);
+    if !collection_dir.exists() || !collection_dir.is_dir() {
+        return Err(PieceError::CollectionFolderMissing(folder_path));
     }
 
     // 4. Generate Piece ID and output file path
     let piece_id = Uuid::new_v4().to_string();
     let file_name = format!("{}.md", piece_id);
-    let piece_file_path = category_dir.join(&file_name);
+    let piece_file_path = collection_dir.join(&file_name);
 
     // 5. Write plain text content to physical file on disk
     std::fs::write(&piece_file_path, content)?;
@@ -102,8 +102,8 @@ pub fn ingest_text_piece(
         )?;
 
         tx.execute(
-            "INSERT INTO pieces (id, category_id, uri, created_at, is_active) VALUES (?, ?, ?, ?, 1);",
-            rusqlite::params![&piece_id, category_id, uri, &created_at],
+            "INSERT INTO pieces (id, collection_id, uri, created_at, is_active) VALUES (?, ?, ?, ?, 1);",
+            rusqlite::params![&piece_id, collection_id, uri, &created_at],
         )?;
 
         for &(key, val) in metadata {
@@ -134,7 +134,7 @@ pub fn ingest_text_piece(
     match run_tx_sequence(conn, &mut vector_id_opt) {
         Ok(created_at) => Ok(Piece {
             id: piece_id,
-            category_id: category_id.to_string(),
+            collection_id: collection_id.to_string(),
             uri: uri.map(String::from),
             created_at,
             is_active: true,
@@ -172,11 +172,11 @@ pub fn replace_piece(
     // 0. Validate fail-fast character and precise token limits
     crate::model::validate_limits(content, None, None)?;
 
-    // 1. Resolve old piece's category info and verify it exists
-    let (category_id, folder_path): (String, String) = conn.query_row(
-        "SELECT pieces.category_id, categories.folder_path 
+    // 1. Resolve old piece's collection info and verify it exists
+    let (collection_id, folder_path): (String, String) = conn.query_row(
+        "SELECT pieces.collection_id, collections.folder_path 
          FROM pieces 
-         JOIN categories ON pieces.category_id = categories.id 
+         JOIN collections ON pieces.collection_id = collections.id 
          WHERE pieces.id = ?;",
         [old_piece_id],
         |row| Ok((row.get(0)?, row.get(1)?)),
@@ -185,16 +185,16 @@ pub fn replace_piece(
         _ => PieceError::Db(e),
     })?;
 
-    // 2. Ensure category directory exists
-    let category_dir = vibe_path.join(&folder_path);
-    if !category_dir.exists() || !category_dir.is_dir() {
-        return Err(PieceError::CategoryFolderMissing(folder_path));
+    // 2. Ensure collection directory exists
+    let collection_dir = vibe_path.join(&folder_path);
+    if !collection_dir.exists() || !collection_dir.is_dir() {
+        return Err(PieceError::CollectionFolderMissing(folder_path));
     }
 
     // 3. Generate new Piece ID and output file path
     let new_piece_id = Uuid::new_v4().to_string();
     let file_name = format!("{}.md", new_piece_id);
-    let piece_file_path = category_dir.join(&file_name);
+    let piece_file_path = collection_dir.join(&file_name);
 
     // 4. Write plain text content to physical file on disk
     std::fs::write(&piece_file_path, content)?;
@@ -222,8 +222,8 @@ pub fn replace_piece(
 
         // Insert new piece
         tx.execute(
-            "INSERT INTO pieces (id, category_id, uri, created_at, is_active) VALUES (?, ?, ?, ?, 1);",
-            rusqlite::params![&new_piece_id, &category_id, uri, &created_at],
+            "INSERT INTO pieces (id, collection_id, uri, created_at, is_active) VALUES (?, ?, ?, ?, 1);",
+            rusqlite::params![&new_piece_id, &collection_id, uri, &created_at],
         )?;
 
         // Insert history record
@@ -261,7 +261,7 @@ pub fn replace_piece(
     match run_tx_sequence(conn, &mut new_vector_id_opt) {
         Ok(created_at) => Ok(Piece {
             id: new_piece_id,
-            category_id,
+            collection_id,
             uri: uri.map(String::from),
             created_at,
             is_active: true,
@@ -299,11 +299,11 @@ pub fn extend_piece(
     // 0. Validate fail-fast character and precise token limits
     crate::model::validate_limits(content, None, None)?;
 
-    // 1. Resolve parent piece's category info and verify it exists
-    let (category_id, folder_path): (String, String) = conn.query_row(
-        "SELECT pieces.category_id, categories.folder_path 
+    // 1. Resolve parent piece's collection info and verify it exists
+    let (collection_id, folder_path): (String, String) = conn.query_row(
+        "SELECT pieces.collection_id, collections.folder_path 
          FROM pieces 
-         JOIN categories ON pieces.category_id = categories.id 
+         JOIN collections ON pieces.collection_id = collections.id 
          WHERE pieces.id = ?;",
         [parent_piece_id],
         |row| Ok((row.get(0)?, row.get(1)?)),
@@ -312,16 +312,16 @@ pub fn extend_piece(
         _ => PieceError::Db(e),
     })?;
 
-    // 2. Ensure category directory exists
-    let category_dir = vibe_path.join(&folder_path);
-    if !category_dir.exists() || !category_dir.is_dir() {
-        return Err(PieceError::CategoryFolderMissing(folder_path));
+    // 2. Ensure collection directory exists
+    let collection_dir = vibe_path.join(&folder_path);
+    if !collection_dir.exists() || !collection_dir.is_dir() {
+        return Err(PieceError::CollectionFolderMissing(folder_path));
     }
 
     // 3. Generate new Piece ID and output file path
     let new_piece_id = Uuid::new_v4().to_string();
     let file_name = format!("{}.md", new_piece_id);
-    let piece_file_path = category_dir.join(&file_name);
+    let piece_file_path = collection_dir.join(&file_name);
 
     // 4. Write plain text content to physical file on disk
     std::fs::write(&piece_file_path, content)?;
@@ -340,8 +340,8 @@ pub fn extend_piece(
 
         // Insert new piece (parent remains active)
         tx.execute(
-            "INSERT INTO pieces (id, category_id, uri, created_at, is_active) VALUES (?, ?, ?, ?, 1);",
-            rusqlite::params![&new_piece_id, &category_id, uri, &created_at],
+            "INSERT INTO pieces (id, collection_id, uri, created_at, is_active) VALUES (?, ?, ?, ?, 1);",
+            rusqlite::params![&new_piece_id, &collection_id, uri, &created_at],
         )?;
 
         // Insert relation 'extension_of' from new piece to parent piece
@@ -377,7 +377,7 @@ pub fn extend_piece(
     match run_tx_sequence(conn, &mut vector_id_opt) {
         Ok(created_at) => Ok(Piece {
             id: new_piece_id,
-            category_id,
+            collection_id,
             uri: uri.map(String::from),
             created_at,
             is_active: true,
@@ -493,14 +493,14 @@ pub fn get_relations(conn: &Connection, piece_id: &str) -> Result<Vec<Relation>,
 mod tests {
     use super::*;
     use crate::db::init_db;
-    use crate::categories::create_category;
+    use crate::collections::create_collection;
     use std::fs;
     use std::path::PathBuf;
 
     struct TestEnv {
         vibe_root: PathBuf,
         conn: Connection,
-        category_id: String,
+        collection_id: String,
         session: ort::session::Session,
         index: usearch::Index,
     }
@@ -514,13 +514,13 @@ mod tests {
             let db_path = vibe_root.join("vibe.db");
             let conn = init_db(&db_path).unwrap();
 
-            let cat = create_category(&conn, &vibe_root, "My Notes", "text", "notes").unwrap();
+            let cat = create_collection(&conn, &vibe_root, "My Notes", "text", "notes").unwrap();
 
             let session = crate::model::init_model().expect("Failed to init model in TestEnv");
             let index = crate::vector_index::load_or_create_index(&vibe_root)
                 .expect("Failed to load/create vector index in TestEnv");
 
-            TestEnv { vibe_root, conn, category_id: cat.id, session, index }
+            TestEnv { vibe_root, conn, collection_id: cat.id, session, index }
         }
     }
 
@@ -542,7 +542,7 @@ mod tests {
         let piece = ingest_text_piece(
             &mut env.conn,
             &env.vibe_root,
-            &env.category_id,
+            &env.collection_id,
             content,
             Some("file:///doc/1.md"),
             &metadata_input,
@@ -552,7 +552,7 @@ mod tests {
         .unwrap();
 
         // 1. Verify returned struct
-        assert_eq!(piece.category_id, env.category_id);
+        assert_eq!(piece.collection_id, env.collection_id);
         assert_eq!(piece.uri, Some("file:///doc/1.md".to_string()));
         assert!(piece.is_active);
         assert!(!piece.created_at.is_empty());
@@ -592,12 +592,12 @@ mod tests {
     }
 
     #[test]
-    fn test_category_not_found() {
+    fn test_collection_not_found() {
         let mut env = TestEnv::new("not_found");
         let err = ingest_text_piece(
             &mut env.conn,
             &env.vibe_root,
-            "non-existent-cat-id",
+            "non-existent-col-id",
             "Content",
             None,
             &[],
@@ -605,15 +605,15 @@ mod tests {
             &env.index,
         ).unwrap_err();
 
-        assert!(matches!(err, PieceError::CategoryNotFound(_)));
+        assert!(matches!(err, PieceError::CollectionNotFound(_)));
     }
 
     #[test]
-    fn test_invalid_category_type() {
+    fn test_invalid_collection_type() {
         let mut env = TestEnv::new("invalid_type");
 
-        // Create contact category
-        let contact_cat = create_category(&env.conn, &env.vibe_root, "Contacts", "contacts", "contacts_folder").unwrap();
+        // Create contact collection
+        let contact_cat = create_collection(&env.conn, &env.vibe_root, "Contacts", "contacts", "contacts_folder").unwrap();
 
         let err = ingest_text_piece(
             &mut env.conn,
@@ -626,7 +626,7 @@ mod tests {
             &env.index,
         ).unwrap_err();
 
-        assert!(matches!(err, PieceError::InvalidCategoryType(_, _, _)));
+        assert!(matches!(err, PieceError::InvalidCollectionType(_, _, _)));
     }
 
     #[test]
@@ -639,7 +639,7 @@ mod tests {
             ("duplicate_key", "value2"),
         ];
 
-        // Ensure initially the category directory is empty
+        // Ensure initially the collection directory is empty
         let notes_dir = env.vibe_root.join("notes");
         let initial_count = fs::read_dir(&notes_dir).unwrap().count();
         assert_eq!(initial_count, 0);
@@ -647,7 +647,7 @@ mod tests {
         let err = ingest_text_piece(
             &mut env.conn,
             &env.vibe_root,
-            &env.category_id,
+            &env.collection_id,
             "Temporarily written text.",
             None,
             &metadata_input,
@@ -670,7 +670,7 @@ mod tests {
         let p1 = ingest_text_piece(
             &mut env.conn,
             &env.vibe_root,
-            &env.category_id,
+            &env.collection_id,
             initial_content,
             None,
             &[],
@@ -733,7 +733,7 @@ mod tests {
         let p1 = ingest_text_piece(
             &mut env.conn,
             &env.vibe_root,
-            &env.category_id,
+            &env.collection_id,
             initial_content,
             None,
             &[],
@@ -817,8 +817,8 @@ mod tests {
     fn test_link_pieces_success_and_idempotency() {
         let mut env = TestEnv::new("link_success");
         
-        let p1 = ingest_text_piece(&mut env.conn, &env.vibe_root, &env.category_id, "Doc 1", None, &[], &mut env.session, &env.index).unwrap();
-        let p2 = ingest_text_piece(&mut env.conn, &env.vibe_root, &env.category_id, "Doc 2", None, &[], &mut env.session, &env.index).unwrap();
+        let p1 = ingest_text_piece(&mut env.conn, &env.vibe_root, &env.collection_id, "Doc 1", None, &[], &mut env.session, &env.index).unwrap();
+        let p2 = ingest_text_piece(&mut env.conn, &env.vibe_root, &env.collection_id, "Doc 2", None, &[], &mut env.session, &env.index).unwrap();
 
         // Perform linking
         link_pieces(&env.conn, &p1.id, &p2.id, "refers_to").unwrap();
@@ -859,7 +859,7 @@ mod tests {
     fn test_link_pieces_not_found() {
         let mut env = TestEnv::new("link_not_found");
         
-        let p1 = ingest_text_piece(&mut env.conn, &env.vibe_root, &env.category_id, "Doc 1", None, &[], &mut env.session, &env.index).unwrap();
+        let p1 = ingest_text_piece(&mut env.conn, &env.vibe_root, &env.collection_id, "Doc 1", None, &[], &mut env.session, &env.index).unwrap();
 
         // Source doesn't exist
         let err_src = link_pieces(&env.conn, "non-existent", &p1.id, "refers_to").unwrap_err();
@@ -883,7 +883,7 @@ mod tests {
         let err_char = ingest_text_piece(
             &mut env.conn,
             &env.vibe_root,
-            &env.category_id,
+            &env.collection_id,
             &large_content,
             None,
             &[],
@@ -906,7 +906,7 @@ mod tests {
         let err_token = ingest_text_piece(
             &mut env.conn,
             &env.vibe_root,
-            &env.category_id,
+            &env.collection_id,
             &token_dense_content,
             None,
             &[],

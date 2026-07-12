@@ -66,6 +66,15 @@ const MIGRATIONS: &[&str] = &[
         FOREIGN KEY (piece_id) REFERENCES pieces(id) ON DELETE CASCADE
     );
     CREATE INDEX idx_vector_mapping_piece_id ON vector_mapping(piece_id);
+    "#,
+    // Version 3: Rename categories to collections and category_id to collection_id
+    r#"
+    PRAGMA foreign_keys = OFF;
+    ALTER TABLE categories RENAME TO collections;
+    ALTER TABLE pieces RENAME COLUMN category_id TO collection_id;
+    DROP INDEX IF EXISTS idx_pieces_category_id;
+    CREATE INDEX idx_pieces_collection_id ON pieces(collection_id);
+    PRAGMA foreign_keys = ON;
     "#
 ];
 
@@ -141,30 +150,30 @@ mod tests {
     fn test_foreign_keys_and_constraints() {
         let conn = init_db(":memory:").unwrap();
 
-        // Inserting category should succeed
+        // Inserting collection should succeed
         conn.execute(
-            "INSERT INTO categories (id, name, type, folder_path) VALUES (?, ?, ?, ?);",
+            "INSERT INTO collections (id, name, type, folder_path) VALUES (?, ?, ?, ?);",
             ["cat-1", "My Notes", "text", "/path/to/notes"],
         )
         .unwrap();
 
-        // Inserting invalid category type should fail check constraint
+        // Inserting invalid collection type should fail check constraint
         let bad_cat = conn.execute(
-            "INSERT INTO categories (id, name, type, folder_path) VALUES (?, ?, ?, ?);",
+            "INSERT INTO collections (id, name, type, folder_path) VALUES (?, ?, ?, ?);",
             ["cat-2", "Bad Notes", "invalid_type", "/path/to/notes"],
         );
         assert!(bad_cat.is_err());
 
-        // Inserting piece with existing category_id should succeed
+        // Inserting piece with existing collection_id should succeed
         conn.execute(
-            "INSERT INTO pieces (id, category_id, uri, created_at, is_active) VALUES (?, ?, ?, ?, ?);",
+            "INSERT INTO pieces (id, collection_id, uri, created_at, is_active) VALUES (?, ?, ?, ?, ?);",
             params!["piece-1", "cat-1", "/path/to/notes/1.md", "2026-07-12T17:00:00Z", 1],
         )
         .unwrap();
 
-        // Inserting piece with non-existent category_id should fail foreign key constraint
+        // Inserting piece with non-existent collection_id should fail foreign key constraint
         let bad_piece = conn.execute(
-            "INSERT INTO pieces (id, category_id, uri, created_at, is_active) VALUES (?, ?, ?, ?, ?);",
+            "INSERT INTO pieces (id, collection_id, uri, created_at, is_active) VALUES (?, ?, ?, ?, ?);",
             params!["piece-2", "non-existent-cat", "/path/to/notes/2.md", "2026-07-12T17:00:00Z", 1],
         );
         assert!(bad_piece.is_err());
@@ -181,8 +190,8 @@ mod tests {
         )
         .unwrap();
 
-        // Verify cascading delete: deleting category deletes pieces and piece_metadata
-        conn.execute("DELETE FROM categories WHERE id = ?;", ["cat-1"])
+        // Verify cascading delete: deleting collection deletes pieces and piece_metadata
+        conn.execute("DELETE FROM collections WHERE id = ?;", ["cat-1"])
             .unwrap();
 
         let piece_count: i32 = conn
