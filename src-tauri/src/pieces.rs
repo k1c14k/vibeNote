@@ -12,8 +12,8 @@ pub enum PieceError {
     CategoryNotFound(String),
     #[error("Piece with ID '{0}' not found in database")]
     PieceNotFound(String),
-    #[error("Category with ID '{0}' is of type '{1}', expected 'text'")]
-    InvalidCategoryType(String, String),
+    #[error("Category with ID '{0}' is of type '{1}', expected '{2}'")]
+    InvalidCategoryType(String, String, String),
     #[error("Category folder '{0}' does not exist on disk")]
     CategoryFolderMissing(String),
 }
@@ -55,7 +55,7 @@ pub fn ingest_text_piece(
 
     // 2. Validate category type is 'text'
     if cat_type != "text" {
-        return Err(PieceError::InvalidCategoryType(category_id.to_string(), cat_type));
+        return Err(PieceError::InvalidCategoryType(category_id.to_string(), cat_type, "text".to_string()));
     }
 
     // 3. Verify category directory exists
@@ -505,7 +505,7 @@ mod tests {
             &[],
         ).unwrap_err();
 
-        assert!(matches!(err, PieceError::InvalidCategoryType(_, _)));
+        assert!(matches!(err, PieceError::InvalidCategoryType(_, _, _)));
     }
 
     #[test]
