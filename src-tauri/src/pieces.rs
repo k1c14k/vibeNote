@@ -143,7 +143,7 @@ pub fn ingest_text_piece(
             let _ = std::fs::remove_file(&piece_file_path);
 
             // Revert memory index
-            let usearch_path = vibe_path.join("vibe.usearch");
+            let usearch_path = vibe_path.join(format!("{}.usearch", folder_path));
             if usearch_path.exists() {
                 if let Some(path_str) = usearch_path.to_str() {
                     let _ = index.load(path_str);
@@ -269,7 +269,7 @@ pub fn replace_piece(
             let _ = std::fs::remove_file(&piece_file_path);
 
             // Revert memory index
-            let usearch_path = vibe_path.join("vibe.usearch");
+            let usearch_path = vibe_path.join(format!("{}.usearch", folder_path));
             if usearch_path.exists() {
                 if let Some(path_str) = usearch_path.to_str() {
                     let _ = index.load(path_str);
@@ -384,7 +384,7 @@ pub fn extend_piece(
             let _ = std::fs::remove_file(&piece_file_path);
 
             // Revert memory index
-            let usearch_path = vibe_path.join("vibe.usearch");
+            let usearch_path = vibe_path.join(format!("{}.usearch", folder_path));
             if usearch_path.exists() {
                 if let Some(path_str) = usearch_path.to_str() {
                     let _ = index.load(path_str);
@@ -396,6 +396,50 @@ pub fn extend_piece(
             Err(err)
         }
     }
+}
+
+/// Tombstones a piece by setting `is_active = 0` and removing its vector from the USearch index.
+pub fn tombstone_piece(
+    conn: &mut Connection,
+    vibe_path: &Path,
+    piece_id: &str,
+    index: &Index,
+) -> Result<(), PieceError> {
+    // 1. Resolve collection info from the piece to know its index file name
+    let (_collection_id, folder_path): (String, String) = conn.query_row(
+        "SELECT pieces.collection_id, collections.folder_path 
+         FROM pieces 
+         JOIN collections ON pieces.collection_id = collections.id 
+         WHERE pieces.id = ?;",
+        [piece_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    ).map_err(|e| match e {
+        rusqlite::Error::QueryReturnedNoRows => PieceError::PieceNotFound(piece_id.to_string()),
+        _ => PieceError::Db(e),
+    })?;
+
+    // 2. Perform DB update and vector removal within transaction
+    let tx = conn.transaction()?;
+
+    // Tombstone in SQLite
+    tx.execute(
+        "UPDATE pieces SET is_active = 0 WHERE id = ?;",
+        [piece_id],
+    )?;
+
+    // Retrieve vector ID mapping
+    let vector_id = crate::vector_index::get_or_create_vector_id(&tx, piece_id)?;
+
+    // Remove from index
+    index.remove(vector_id)
+        .map_err(|e| PieceError::VectorIndex(crate::vector_index::VectorIndexError::USearch(format!("{:?}", e))))?;
+
+    // Save index
+    crate::vector_index::save_index(index, vibe_path, &folder_path)?;
+
+    tx.commit()?;
+
+    Ok(())
 }
 
 /// Creates an explicit semantic connection between two pieces in SQLite.
@@ -911,5 +955,54 @@ mod tests {
             &env.index,
         ).unwrap_err();
         assert!(matches!(err_token, PieceError::TokenLimitExceeded(800, _)));
+    }
+
+    #[test]
+    fn test_tombstone_piece_success() {
+        let mut env = TestEnv::new("tombstone");
+        let content = "This is a test note for tombstoning.";
+
+        // 1. Ingest piece
+        let piece = ingest_text_piece(
+            &mut env.conn,
+            &env.vibe_root,
+            &env.collection_id,
+            content,
+            None,
+            &[],
+            &mut env.session,
+            &env.index,
+        ).unwrap();
+
+        assert!(piece.is_active);
+        assert_eq!(env.index.size(), 1);
+
+        // 2. Call tombstone_piece
+        tombstone_piece(
+            &mut env.conn,
+            &env.vibe_root,
+            &piece.id,
+            &env.index,
+        ).unwrap();
+
+        // 3. Assert in SQLite: is_active is 0
+        let is_active: i32 = env.conn.query_row(
+            "SELECT is_active FROM pieces WHERE id = ?;",
+            [&piece.id],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(is_active, 0);
+
+        // 4. Assert in index: size is 0
+        assert_eq!(env.index.size(), 0);
+
+        // 5. Reload index from disk and assert it has 0 size
+        let cat_folder: String = env.conn.query_row(
+            "SELECT folder_path FROM collections WHERE id = ?;",
+            [&env.collection_id],
+            |row| row.get(0),
+        ).unwrap();
+        let reloaded_index = crate::vector_index::load_or_create_index(&env.vibe_root, &cat_folder).unwrap();
+        assert_eq!(reloaded_index.size(), 0);
     }
 }
