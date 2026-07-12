@@ -57,6 +57,15 @@ const MIGRATIONS: &[&str] = &[
     CREATE INDEX idx_piece_history_child ON piece_history(child_piece_id);
     CREATE INDEX idx_relations_source ON relations(source_piece_id);
     CREATE INDEX idx_relations_target ON relations(target_piece_id);
+    "#,
+    // Version 2: Vector mapping schema
+    r#"
+    CREATE TABLE vector_mapping (
+        vector_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        piece_id TEXT NOT NULL UNIQUE,
+        FOREIGN KEY (piece_id) REFERENCES pieces(id) ON DELETE CASCADE
+    );
+    CREATE INDEX idx_vector_mapping_piece_id ON vector_mapping(piece_id);
     "#
 ];
 
@@ -98,7 +107,7 @@ mod tests {
         let version: i32 = conn
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 1);
+        assert_eq!(version, MIGRATIONS.len() as i32);
     }
 
     #[test]
@@ -114,7 +123,7 @@ mod tests {
             let version: i32 = conn
                 .query_row("PRAGMA user_version;", [], |row| row.get(0))
                 .unwrap();
-            assert_eq!(version, 1);
+            assert_eq!(version, MIGRATIONS.len() as i32);
         }
 
         {
@@ -122,7 +131,7 @@ mod tests {
             let version: i32 = conn
                 .query_row("PRAGMA user_version;", [], |row| row.get(0))
                 .unwrap();
-            assert_eq!(version, 1);
+            assert_eq!(version, MIGRATIONS.len() as i32);
         }
 
         let _ = std::fs::remove_file(&db_path);

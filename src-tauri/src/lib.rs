@@ -4,6 +4,7 @@ pub mod categories;
 pub mod pieces;
 pub mod contacts;
 pub mod calendar;
+pub mod vector_index;
 
 
 
