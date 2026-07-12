@@ -10,6 +10,8 @@ pub enum PieceError {
     Io(#[from] std::io::Error),
     #[error("Category with ID '{0}' not found in database")]
     CategoryNotFound(String),
+    #[error("Piece with ID '{0}' not found in database")]
+    PieceNotFound(String),
     #[error("Category with ID '{0}' is of type '{1}', expected 'text'")]
     InvalidCategoryType(String, String),
     #[error("Category folder '{0}' does not exist on disk")]
@@ -107,6 +109,186 @@ pub fn ingest_text_piece(
         }),
         Err(err) => {
             // Rollback disk file on database write failure
+            let _ = std::fs::remove_file(&piece_file_path);
+            Err(PieceError::Db(err))
+        }
+    }
+}
+
+/// Replaces an existing piece with a new version (tombstoning the old one).
+pub fn replace_piece(
+    conn: &mut Connection,
+    vibe_path: &Path,
+    old_piece_id: &str,
+    content: &str,
+    uri: Option<&str>,
+    metadata: &[(&str, &str)],
+) -> Result<Piece, PieceError> {
+    // 1. Resolve old piece's category info and verify it exists
+    let (category_id, folder_path): (String, String) = conn.query_row(
+        "SELECT pieces.category_id, categories.folder_path 
+         FROM pieces 
+         JOIN categories ON pieces.category_id = categories.id 
+         WHERE pieces.id = ?;",
+        [old_piece_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    ).map_err(|e| match e {
+        rusqlite::Error::QueryReturnedNoRows => PieceError::PieceNotFound(old_piece_id.to_string()),
+        _ => PieceError::Db(e),
+    })?;
+
+    // 2. Ensure category directory exists
+    let category_dir = vibe_path.join(&folder_path);
+    if !category_dir.exists() || !category_dir.is_dir() {
+        return Err(PieceError::CategoryFolderMissing(folder_path));
+    }
+
+    // 3. Generate new Piece ID and output file path
+    let new_piece_id = Uuid::new_v4().to_string();
+    let file_name = format!("{}.md", new_piece_id);
+    let piece_file_path = category_dir.join(&file_name);
+
+    // 4. Write plain text content to physical file on disk
+    std::fs::write(&piece_file_path, content)?;
+
+    // 5. DB changes inside transaction
+    let db_result = (|| -> Result<String, rusqlite::Error> {
+        let tx = conn.transaction()?;
+
+        // Retrieve current timestamp
+        let created_at: String = tx.query_row(
+            "SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now');",
+            [],
+            |row| row.get(0),
+        )?;
+
+        // Tombstone old piece
+        tx.execute(
+            "UPDATE pieces SET is_active = 0 WHERE id = ?;",
+            [old_piece_id],
+        )?;
+
+        // Insert new piece
+        tx.execute(
+            "INSERT INTO pieces (id, category_id, uri, created_at, is_active) VALUES (?, ?, ?, ?, 1);",
+            rusqlite::params![&new_piece_id, &category_id, uri, &created_at],
+        )?;
+
+        // Insert history record
+        tx.execute(
+            "INSERT INTO piece_history (parent_piece_id, child_piece_id, change_type, timestamp) VALUES (?, ?, 'replacement', ?);",
+            rusqlite::params![old_piece_id, &new_piece_id, &created_at],
+        )?;
+
+        // Insert new metadata
+        for &(key, val) in metadata {
+            tx.execute(
+                "INSERT INTO piece_metadata (piece_id, key, value) VALUES (?, ?, ?);",
+                [&new_piece_id, key, val],
+            )?;
+        }
+
+        tx.commit()?;
+        Ok(created_at)
+    })();
+
+    match db_result {
+        Ok(created_at) => Ok(Piece {
+            id: new_piece_id,
+            category_id,
+            uri: uri.map(String::from),
+            created_at,
+            is_active: true,
+        }),
+        Err(err) => {
+            // Rollback disk file
+            let _ = std::fs::remove_file(&piece_file_path);
+            Err(PieceError::Db(err))
+        }
+    }
+}
+
+/// Extends an existing piece with a new piece linked via 'extension_of' relation.
+pub fn extend_piece(
+    conn: &mut Connection,
+    vibe_path: &Path,
+    parent_piece_id: &str,
+    content: &str,
+    uri: Option<&str>,
+    metadata: &[(&str, &str)],
+) -> Result<Piece, PieceError> {
+    // 1. Resolve parent piece's category info and verify it exists
+    let (category_id, folder_path): (String, String) = conn.query_row(
+        "SELECT pieces.category_id, categories.folder_path 
+         FROM pieces 
+         JOIN categories ON pieces.category_id = categories.id 
+         WHERE pieces.id = ?;",
+        [parent_piece_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    ).map_err(|e| match e {
+        rusqlite::Error::QueryReturnedNoRows => PieceError::PieceNotFound(parent_piece_id.to_string()),
+        _ => PieceError::Db(e),
+    })?;
+
+    // 2. Ensure category directory exists
+    let category_dir = vibe_path.join(&folder_path);
+    if !category_dir.exists() || !category_dir.is_dir() {
+        return Err(PieceError::CategoryFolderMissing(folder_path));
+    }
+
+    // 3. Generate new Piece ID and output file path
+    let new_piece_id = Uuid::new_v4().to_string();
+    let file_name = format!("{}.md", new_piece_id);
+    let piece_file_path = category_dir.join(&file_name);
+
+    // 4. Write plain text content to physical file on disk
+    std::fs::write(&piece_file_path, content)?;
+
+    // 5. DB changes inside transaction
+    let db_result = (|| -> Result<String, rusqlite::Error> {
+        let tx = conn.transaction()?;
+
+        // Retrieve current timestamp
+        let created_at: String = tx.query_row(
+            "SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now');",
+            [],
+            |row| row.get(0),
+        )?;
+
+        // Insert new piece (parent remains active)
+        tx.execute(
+            "INSERT INTO pieces (id, category_id, uri, created_at, is_active) VALUES (?, ?, ?, ?, 1);",
+            rusqlite::params![&new_piece_id, &category_id, uri, &created_at],
+        )?;
+
+        // Insert relation 'extension_of' from new piece to parent piece
+        tx.execute(
+            "INSERT INTO relations (source_piece_id, target_piece_id, relation_type, created_at) VALUES (?, ?, 'extension_of', ?);",
+            rusqlite::params![&new_piece_id, parent_piece_id, &created_at],
+        )?;
+
+        // Insert new metadata
+        for &(key, val) in metadata {
+            tx.execute(
+                "INSERT INTO piece_metadata (piece_id, key, value) VALUES (?, ?, ?);",
+                [&new_piece_id, key, val],
+            )?;
+        }
+
+        tx.commit()?;
+        Ok(created_at)
+    })();
+
+    match db_result {
+        Ok(created_at) => Ok(Piece {
+            id: new_piece_id,
+            category_id,
+            uri: uri.map(String::from),
+            created_at,
+            is_active: true,
+        }),
+        Err(err) => {
+            // Rollback disk file
             let _ = std::fs::remove_file(&piece_file_path);
             Err(PieceError::Db(err))
         }
@@ -272,5 +454,138 @@ mod tests {
         // Verify the file was cleaned up from the directory
         let final_count = fs::read_dir(&notes_dir).unwrap().count();
         assert_eq!(final_count, 0);
+    }
+
+    #[test]
+    fn test_replace_piece_success() {
+        let mut env = TestEnv::new("replace_success");
+        let initial_content = "Version 1";
+        
+        let p1 = ingest_text_piece(
+            &mut env.conn,
+            &env.vibe_root,
+            &env.category_id,
+            initial_content,
+            None,
+            &[],
+        ).unwrap();
+
+        // Perform replacement
+        let p2_content = "Version 2 (replaced)";
+        let p2 = replace_piece(
+            &mut env.conn,
+            &env.vibe_root,
+            &p1.id,
+            p2_content,
+            Some("file:///doc/2.md"),
+            &[("replaced_by", "p2")],
+        ).unwrap();
+
+        // 1. Verify p1 is inactive
+        let p1_active: i32 = env.conn.query_row(
+            "SELECT is_active FROM pieces WHERE id = ?;",
+            [&p1.id],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(p1_active, 0);
+
+        // 2. Verify p2 is active and has correct content
+        let p2_active: i32 = env.conn.query_row(
+            "SELECT is_active FROM pieces WHERE id = ?;",
+            [&p2.id],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(p2_active, 1);
+
+        let p2_file_path = env.vibe_root.join("notes").join(format!("{}.md", p2.id));
+        let p2_disk_content = fs::read_to_string(p2_file_path).unwrap();
+        assert_eq!(p2_disk_content, p2_content);
+
+        // 3. Verify history record
+        let (parent, child, change_type): (String, String, String) = env.conn.query_row(
+            "SELECT parent_piece_id, child_piece_id, change_type FROM piece_history WHERE parent_piece_id = ?;",
+            [&p1.id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ).unwrap();
+        assert_eq!(parent, p1.id);
+        assert_eq!(child, p2.id);
+        assert_eq!(change_type, "replacement");
+    }
+
+    #[test]
+    fn test_extend_piece_success() {
+        let mut env = TestEnv::new("extend_success");
+        let initial_content = "Base context";
+        
+        let p1 = ingest_text_piece(
+            &mut env.conn,
+            &env.vibe_root,
+            &env.category_id,
+            initial_content,
+            None,
+            &[],
+        ).unwrap();
+
+        // Perform extension
+        let ext_content = "Additional detail";
+        let p2 = extend_piece(
+            &mut env.conn,
+            &env.vibe_root,
+            &p1.id,
+            ext_content,
+            None,
+            &[],
+        ).unwrap();
+
+        // 1. Verify p1 remains active
+        let p1_active: i32 = env.conn.query_row(
+            "SELECT is_active FROM pieces WHERE id = ?;",
+            [&p1.id],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(p1_active, 1);
+
+        // 2. Verify p2 is active
+        let p2_active: i32 = env.conn.query_row(
+            "SELECT is_active FROM pieces WHERE id = ?;",
+            [&p2.id],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(p2_active, 1);
+
+        // 3. Verify relation
+        let (source, target, rel_type): (String, String, String) = env.conn.query_row(
+            "SELECT source_piece_id, target_piece_id, relation_type FROM relations WHERE source_piece_id = ?;",
+            [&p2.id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ).unwrap();
+        assert_eq!(source, p2.id);
+        assert_eq!(target, p1.id);
+        assert_eq!(rel_type, "extension_of");
+    }
+
+    #[test]
+    fn test_versioning_non_existent_piece() {
+        let mut env = TestEnv::new("non_existent_piece");
+
+        let err_replace = replace_piece(
+            &mut env.conn,
+            &env.vibe_root,
+            "non-existent-id",
+            "Content",
+            None,
+            &[],
+        ).unwrap_err();
+        assert!(matches!(err_replace, PieceError::PieceNotFound(_)));
+
+        let err_extend = extend_piece(
+            &mut env.conn,
+            &env.vibe_root,
+            "non-existent-id",
+            "Content",
+            None,
+            &[],
+        ).unwrap_err();
+        assert!(matches!(err_extend, PieceError::PieceNotFound(_)));
     }
 }
