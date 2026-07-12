@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::Path;
 use rusqlite::{Connection, OptionalExtension};
 use usearch::{Index, IndexOptions, MetricKind, ScalarKind};
@@ -12,6 +13,8 @@ pub enum VectorIndexError {
     Io(#[from] std::io::Error),
     #[error("Invalid path: path contains invalid UTF-8 characters")]
     InvalidPath,
+    #[error("ONNX model error: {0}")]
+    OnnxModel(String),
 }
 
 /// Helper to create a new USearch Index configured for the vibeNote embedding model.
@@ -78,8 +81,136 @@ pub fn get_piece_id(conn: &Connection, vector_id: u64) -> Result<Option<String>,
     ).optional()
 }
 
+/// The result of a semantic similarity query.
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone, PartialEq)]
+pub struct QueryResult {
+    pub piece_id: String,
+    /// Cosine similarity in [0.0, 1.0]. Higher = more similar.
+    pub similarity: f32,
+}
+
+/// Options to control the behaviour of [`query_pieces`].
+pub struct QueryOptions {
+    /// If set, restrict results to pieces belonging to this category (collection) ID.
+    pub collection_id: Option<String>,
+    /// Maximum number of results to return.
+    pub top_k: usize,
+}
+
+impl Default for QueryOptions {
+    fn default() -> Self {
+        Self {
+            collection_id: None,
+            top_k: 10,
+        }
+    }
+}
+
+/// Queries the USearch index for pieces semantically similar to `query_text`.
+///
+/// * `conn` - SQLite database connection.
+/// * `vibe_path` - Root path of the Vibe workspace (used to locate `vibe.usearch`).
+/// * `session` - ONNX runtime session for generating query embeddings.
+/// * `query_text` - The natural language query string.
+/// * `options` - [`QueryOptions`] controlling collection filter and result count.
+///
+/// Returns a list of [`QueryResult`] sorted by descending similarity (best match first).
+/// Tombstoned pieces (`is_active = 0`) are never returned.
+pub fn query_pieces(
+    conn: &Connection,
+    vibe_path: &Path,
+    session: &mut ort::session::Session,
+    query_text: &str,
+    options: QueryOptions,
+) -> Result<Vec<QueryResult>, VectorIndexError> {
+    // 1. Generate query embedding
+    let embedding = crate::model::generate_embedding(session, query_text)
+        .map_err(|e| VectorIndexError::OnnxModel(e.to_string()))?;
+
+    // 2. Load global index and search for top-k candidates
+    let index = load_or_create_index(vibe_path)?;
+    let search_results = index
+        .search(&embedding, options.top_k)
+        .map_err(|e| VectorIndexError::USearch(format!("{:?}", e)))?;
+
+    let keys = search_results.keys;
+    let distances = search_results.distances;
+
+    if keys.is_empty() {
+        return Ok(vec![]);
+    }
+
+    // 3. Map vector keys -> piece IDs, preserving order
+    let mut candidates: Vec<(String, f32)> = Vec::with_capacity(keys.len());
+    for (key, dist) in keys.iter().zip(distances.iter()) {
+        if let Some(piece_id) = get_piece_id(conn, *key)? {
+            candidates.push((piece_id, *dist));
+        }
+    }
+
+    if candidates.is_empty() {
+        return Ok(vec![]);
+    }
+
+    // 4. SQL filter: active status + optional collection
+    let candidate_ids: Vec<&str> = candidates.iter().map(|(id, _)| id.as_str()).collect();
+
+    // Build parameterised IN clause
+    let placeholders = candidate_ids
+        .iter()
+        .map(|_| "?")
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let mut sql = format!(
+        "SELECT p.id FROM pieces p WHERE p.id IN ({}) AND p.is_active = 1",
+        placeholders
+    );
+
+    if options.collection_id.is_some() {
+        sql.push_str(" AND p.category_id = ?");
+    }
+
+    // Collect surviving piece IDs
+    let mut stmt = conn.prepare(&sql)?;
+
+    let surviving: HashSet<String> = if let Some(ref cid) = options.collection_id {
+        let params: Vec<&dyn rusqlite::types::ToSql> = candidate_ids
+            .iter()
+            .map(|id| id as &dyn rusqlite::types::ToSql)
+            .chain(std::iter::once(cid as &dyn rusqlite::types::ToSql))
+            .collect();
+        stmt.query_map(params.as_slice(), |row| row.get::<_, String>(0))?
+            .filter_map(|r| r.ok())
+            .collect()
+    } else {
+        let params: Vec<&dyn rusqlite::types::ToSql> = candidate_ids
+            .iter()
+            .map(|id| id as &dyn rusqlite::types::ToSql)
+            .collect();
+        stmt.query_map(params.as_slice(), |row| row.get::<_, String>(0))?
+            .filter_map(|r| r.ok())
+            .collect()
+    };
+
+    // 5. Re-rank: preserve USearch order, convert distance -> similarity
+    let results: Vec<QueryResult> = candidates
+        .into_iter()
+        .filter(|(piece_id, _)| surviving.contains(piece_id))
+        .map(|(piece_id, dist)| QueryResult {
+            piece_id,
+            similarity: 1.0 - dist,
+        })
+        .collect();
+
+    Ok(results)
+}
+
 #[cfg(test)]
 mod tests {
+    use crate::model::init_model;
+    use crate::pieces::ingest_text_piece;
+    use crate::categories::create_category;
     use super::*;
     use crate::db::init_db;
     use uuid::Uuid;
@@ -174,5 +305,167 @@ mod tests {
 
         let p_none = get_piece_id(&conn, 9999).unwrap();
         assert!(p_none.is_none());
+    }
+
+    // -------------------------------------------------------------------------
+    // Query engine tests
+    // -------------------------------------------------------------------------
+
+    struct QueryTestEnv {
+        vibe_root: PathBuf,
+        conn: Connection,
+        session: ort::session::Session,
+        index: Index,
+        category_id: String,
+    }
+
+    impl QueryTestEnv {
+        fn new(name: &str) -> Self {
+            let vibe_root = std::env::temp_dir()
+                .join(format!("vibenote_query_test_{}_{}", name, Uuid::new_v4().simple()));
+            fs::create_dir_all(&vibe_root).unwrap();
+
+            let db_path = vibe_root.join("vibe.db");
+            let conn = init_db(&db_path).unwrap();
+
+            let cat = create_category(&conn, &vibe_root, "Notes", "text", "notes").unwrap();
+
+            let session = init_model().expect("Failed to init model");
+            let index = load_or_create_index(&vibe_root).expect("Failed to load/create index");
+
+            QueryTestEnv { vibe_root, conn, session, index, category_id: cat.id }
+        }
+    }
+
+    impl Drop for QueryTestEnv {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.vibe_root);
+        }
+    }
+
+    #[test]
+    fn test_query_returns_ranked_results() {
+        let mut env = QueryTestEnv::new("ranked");
+
+        // Ingest 3 semantically distinct pieces
+        ingest_text_piece(&mut env.conn, &env.vibe_root, &env.category_id,
+            "The Eiffel Tower is a famous landmark in Paris, France.",
+            None, &[], &mut env.session, &env.index).unwrap();
+        let target = ingest_text_piece(&mut env.conn, &env.vibe_root, &env.category_id,
+            "Rust is a systems programming language focused on safety and performance.",
+            None, &[], &mut env.session, &env.index).unwrap();
+        ingest_text_piece(&mut env.conn, &env.vibe_root, &env.category_id,
+            "Chocolate cake is a delicious dessert enjoyed worldwide.",
+            None, &[], &mut env.session, &env.index).unwrap();
+
+        let results = query_pieces(
+            &env.conn,
+            &env.vibe_root,
+            &mut env.session,
+            "systems programming language memory safety",
+            QueryOptions { top_k: 3, ..Default::default() },
+        ).unwrap();
+
+        assert!(!results.is_empty(), "Should return results");
+        assert_eq!(results[0].piece_id, target.id, "Most relevant piece should rank first");
+        assert!(results[0].similarity > 0.0, "Top result should have a positive similarity score");
+        // Results must be in descending similarity order
+        for w in results.windows(2) {
+            assert!(w[0].similarity >= w[1].similarity);
+        }
+    }
+
+    #[test]
+    fn test_query_filters_by_collection() {
+        let mut env = QueryTestEnv::new("collection_filter");
+
+        // Create a second collection
+        let cat2 = create_category(&env.conn, &env.vibe_root, "Work Notes", "text", "work_notes").unwrap();
+
+        let p1 = ingest_text_piece(&mut env.conn, &env.vibe_root, &env.category_id,
+            "Rust programming language overview.",
+            None, &[], &mut env.session, &env.index).unwrap();
+        let _p2 = ingest_text_piece(&mut env.conn, &env.vibe_root, &cat2.id,
+            "Rust programming language details.",
+            None, &[], &mut env.session, &env.index).unwrap();
+
+        let results = query_pieces(
+            &env.conn,
+            &env.vibe_root,
+            &mut env.session,
+            "Rust programming",
+            QueryOptions { collection_id: Some(env.category_id.clone()), top_k: 10, ..Default::default() },
+        ).unwrap();
+
+        assert!(!results.is_empty());
+        for r in &results {
+            assert_eq!(r.piece_id, p1.id, "Only pieces from the filtered collection should be returned");
+        }
+    }
+
+    #[test]
+    fn test_query_excludes_tombstoned() {
+        let mut env = QueryTestEnv::new("tombstone");
+
+        let p = ingest_text_piece(&mut env.conn, &env.vibe_root, &env.category_id,
+            "Rust is a great systems language.",
+            None, &[], &mut env.session, &env.index).unwrap();
+
+        // Tombstone the piece
+        env.conn.execute("UPDATE pieces SET is_active = 0 WHERE id = ?;", [&p.id]).unwrap();
+
+        let results = query_pieces(
+            &env.conn,
+            &env.vibe_root,
+            &mut env.session,
+            "Rust systems language",
+            QueryOptions { top_k: 5, ..Default::default() },
+        ).unwrap();
+
+        assert!(
+            results.iter().all(|r| r.piece_id != p.id),
+            "Tombstoned piece must not appear in query results"
+        );
+    }
+
+    #[test]
+    fn test_query_empty_index() {
+        let mut env = QueryTestEnv::new("empty");
+
+        let results = query_pieces(
+            &env.conn,
+            &env.vibe_root,
+            &mut env.session,
+            "anything",
+            QueryOptions::default(),
+        ).unwrap();
+
+        assert!(results.is_empty(), "Empty index should return no results");
+    }
+
+    #[test]
+    fn test_query_no_collection_returns_all() {
+        let mut env = QueryTestEnv::new("all_collections");
+
+        let cat2 = create_category(&env.conn, &env.vibe_root, "Work Notes", "text", "work_notes").unwrap();
+
+        let p1 = ingest_text_piece(&mut env.conn, &env.vibe_root, &env.category_id,
+            "Rust programming language overview.",
+            None, &[], &mut env.session, &env.index).unwrap();
+        let p2 = ingest_text_piece(&mut env.conn, &env.vibe_root, &cat2.id,
+            "Rust memory safety and concurrency.",
+            None, &[], &mut env.session, &env.index).unwrap();
+
+        let results = query_pieces(
+            &env.conn,
+            &env.vibe_root,
+            &mut env.session,
+            "Rust programming",
+            QueryOptions { top_k: 10, ..Default::default() },
+        ).unwrap();
+
+        let ids: Vec<&str> = results.iter().map(|r| r.piece_id.as_str()).collect();
+        assert!(ids.contains(&p1.id.as_str()), "Result should include piece from collection 1");
+        assert!(ids.contains(&p2.id.as_str()), "Result should include piece from collection 2");
     }
 }
