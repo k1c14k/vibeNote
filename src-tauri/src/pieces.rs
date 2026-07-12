@@ -295,6 +295,94 @@ pub fn extend_piece(
     }
 }
 
+/// Creates an explicit semantic connection between two pieces in SQLite.
+pub fn link_pieces(
+    conn: &Connection,
+    source_piece_id: &str,
+    target_piece_id: &str,
+    relation_type: &str,
+) -> Result<(), PieceError> {
+    // 1. Verify source piece exists
+    let source_exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pieces WHERE id = ?);",
+        [source_piece_id],
+        |row| row.get(0),
+    )?;
+    if !source_exists {
+        return Err(PieceError::PieceNotFound(source_piece_id.to_string()));
+    }
+
+    // 2. Verify target piece exists
+    let target_exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pieces WHERE id = ?);",
+        [target_piece_id],
+        |row| row.get(0),
+    )?;
+    if !target_exists {
+        return Err(PieceError::PieceNotFound(target_piece_id.to_string()));
+    }
+
+    // 3. Get timestamp and insert relation
+    let created_at: String = conn.query_row(
+        "SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now');",
+        [],
+        |row| row.get(0),
+    )?;
+
+    conn.execute(
+        "INSERT OR IGNORE INTO relations (source_piece_id, target_piece_id, relation_type, created_at) VALUES (?, ?, ?, ?);",
+        rusqlite::params![source_piece_id, target_piece_id, relation_type, &created_at],
+    )?;
+
+    Ok(())
+}
+
+/// A relation record returned by get_relations.
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone, PartialEq, Eq)]
+pub struct Relation {
+    pub source_piece_id: String,
+    pub target_piece_id: String,
+    pub relation_type: String,
+    pub created_at: String,
+}
+
+/// Retrieves all relations where the piece is either the source or the target.
+pub fn get_relations(conn: &Connection, piece_id: &str) -> Result<Vec<Relation>, PieceError> {
+    // Verify piece exists
+    let exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pieces WHERE id = ?);",
+        [piece_id],
+        |row| row.get(0),
+    )?;
+    if !exists {
+        return Err(PieceError::PieceNotFound(piece_id.to_string()));
+    }
+
+    let mut stmt = conn.prepare(
+        "SELECT source_piece_id, target_piece_id, relation_type, created_at 
+         FROM relations 
+         WHERE source_piece_id = ? OR target_piece_id = ? 
+         ORDER BY created_at DESC;",
+    )?;
+
+    let rows = stmt.query_map([piece_id, piece_id], |row| {
+        Ok(Relation {
+            source_piece_id: row.get(0)?,
+            target_piece_id: row.get(1)?,
+            relation_type: row.get(2)?,
+            created_at: row.get(3)?,
+        })
+    })?;
+
+    let mut relations = Vec::new();
+    for rel in rows {
+        relations.push(rel?);
+    }
+
+    Ok(relations)
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -587,5 +675,66 @@ mod tests {
             &[],
         ).unwrap_err();
         assert!(matches!(err_extend, PieceError::PieceNotFound(_)));
+    }
+
+    #[test]
+    fn test_link_pieces_success_and_idempotency() {
+        let mut env = TestEnv::new("link_success");
+        
+        let p1 = ingest_text_piece(&mut env.conn, &env.vibe_root, &env.category_id, "Doc 1", None, &[]).unwrap();
+        let p2 = ingest_text_piece(&mut env.conn, &env.vibe_root, &env.category_id, "Doc 2", None, &[]).unwrap();
+
+        // Perform linking
+        link_pieces(&env.conn, &p1.id, &p2.id, "refers_to").unwrap();
+
+        // 1. Verify link exists in relations table
+        let (source, target, rel_type): (String, String, String) = env.conn.query_row(
+            "SELECT source_piece_id, target_piece_id, relation_type FROM relations WHERE source_piece_id = ? AND target_piece_id = ?;",
+            [&p1.id, &p2.id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ).unwrap();
+        assert_eq!(source, p1.id);
+        assert_eq!(target, p2.id);
+        assert_eq!(rel_type, "refers_to");
+
+        // 2. Test query helper get_relations
+        let rels_p1 = get_relations(&env.conn, &p1.id).unwrap();
+        assert_eq!(rels_p1.len(), 1);
+        assert_eq!(rels_p1[0].source_piece_id, p1.id);
+        assert_eq!(rels_p1[0].target_piece_id, p2.id);
+        assert_eq!(rels_p1[0].relation_type, "refers_to");
+
+        let rels_p2 = get_relations(&env.conn, &p2.id).unwrap();
+        assert_eq!(rels_p2.len(), 1);
+        assert_eq!(rels_p2[0].source_piece_id, p1.id);
+        assert_eq!(rels_p2[0].target_piece_id, p2.id);
+
+        // 3. Test idempotency
+        link_pieces(&env.conn, &p1.id, &p2.id, "refers_to").unwrap();
+        let rels_count: i32 = env.conn.query_row(
+            "SELECT COUNT(*) FROM relations WHERE source_piece_id = ? AND target_piece_id = ? AND relation_type = 'refers_to';",
+            [&p1.id, &p2.id],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(rels_count, 1);
+    }
+
+    #[test]
+    fn test_link_pieces_not_found() {
+        let mut env = TestEnv::new("link_not_found");
+        
+        let p1 = ingest_text_piece(&mut env.conn, &env.vibe_root, &env.category_id, "Doc 1", None, &[]).unwrap();
+
+        // Source doesn't exist
+        let err_src = link_pieces(&env.conn, "non-existent", &p1.id, "refers_to").unwrap_err();
+        assert!(matches!(err_src, PieceError::PieceNotFound(_)));
+
+        // Target doesn't exist
+        let err_tgt = link_pieces(&env.conn, &p1.id, "non-existent", "refers_to").unwrap_err();
+        assert!(matches!(err_tgt, PieceError::PieceNotFound(_)));
+
+        // get_relations on non-existent piece
+        let err_query = get_relations(&env.conn, "non-existent").unwrap_err();
+        assert!(matches!(err_query, PieceError::PieceNotFound(_)));
     }
 }
