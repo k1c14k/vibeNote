@@ -31,7 +31,7 @@ pub struct JsonRpcError {
     pub data: Option<Value>,
 }
 
-#[derive(Serialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct PieceDetail {
     pub id: String,
     pub collection_id: String,
@@ -69,8 +69,14 @@ pub fn get_piece_info(vibe_path: &Path, conn: &Connection, id: &str) -> Result<P
     };
 
     let file_path = vibe_path.join(&folder_path).join(format!("{}.{}", id, ext));
-    let content = std::fs::read_to_string(&file_path)
+    let raw_content = std::fs::read_to_string(&file_path)
         .unwrap_or_else(|_| "".to_string());
+
+    let content = match col_type.as_str() {
+        "contacts" => parse_vcard_to_text(&raw_content),
+        "calendar" => parse_ical_to_text(&raw_content),
+        _ => raw_content,
+    };
 
     let mut meta_stmt = conn.prepare("SELECT key, value FROM piece_metadata WHERE piece_id = ?;")
         .map_err(|e| e.to_string())?;
@@ -378,7 +384,7 @@ fn handle_tools_call(
         "create_piece" => call_create_piece(vibe_path, conn, session, arguments),
         "get_piece_details" => call_get_piece_details(vibe_path, conn, arguments),
         "link_pieces" => call_link_pieces(conn, arguments),
-        "get_relations_graph" => call_get_relations_graph(conn, arguments),
+        "get_relations_graph" => call_get_relations_graph(vibe_path, conn, arguments),
         "list_collections" => call_list_collections(conn),
         "set_metadata" => call_set_metadata(conn, arguments),
         "delete_metadata" => call_delete_metadata(conn, arguments),
@@ -508,23 +514,23 @@ fn call_create_piece(
     let index = crate::vector_index::load_or_create_index(vibe_path, &folder_path)
         .map_err(|e| format!("Failed to load vector index: {}", e))?;
 
-    match col_type.as_str() {
-        "text" => {
-            // Parse metadata if present
-            let mut metadata_list = Vec::new();
-            if let Some(meta_val) = args.get("metadata") {
-                if let Some(obj) = meta_val.as_object() {
-                    for (k, v) in obj {
-                        if let Some(s) = v.as_str() {
-                            metadata_list.push((k.clone(), s.to_string()));
-                        }
-                    }
+    // Parse metadata if present
+    let mut metadata_list = Vec::new();
+    if let Some(meta_val) = args.get("metadata") {
+        if let Some(obj) = meta_val.as_object() {
+            for (k, v) in obj {
+                if let Some(s) = v.as_str() {
+                    metadata_list.push((k.clone(), s.to_string()));
                 }
             }
-            let meta_slice: Vec<(&str, &str)> = metadata_list.iter()
-                .map(|(k, v)| (k.as_str(), v.as_str()))
-                .collect();
+        }
+    }
+    let meta_slice: Vec<(&str, &str)> = metadata_list.iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
 
+    match col_type.as_str() {
+        "text" => {
             let piece = crate::pieces::ingest_text_piece(
                 conn,
                 vibe_path,
@@ -548,6 +554,7 @@ fn call_create_piece(
                 collection_id,
                 &contact,
                 None,
+                &meta_slice,
                 session,
                 &index,
             ).map_err(|e| format!("Ingestion error: {}", e))?;
@@ -564,6 +571,7 @@ fn call_create_piece(
                 collection_id,
                 &event,
                 None,
+                &meta_slice,
                 session,
                 &index,
             ).map_err(|e| format!("Ingestion error: {}", e))?;
@@ -636,7 +644,7 @@ fn call_link_pieces(conn: &Connection, args: Value) -> Result<Value, String> {
     Ok(json!({}))
 }
 
-fn call_get_relations_graph(conn: &Connection, args: Value) -> Result<Value, String> {
+fn call_get_relations_graph(vibe_path: &Path, conn: &Connection, args: Value) -> Result<Value, String> {
     let piece_id = args.get("piece_id")
         .and_then(|v| v.as_str())
         .ok_or_else(|| "Missing argument: piece_id".to_string())?;
@@ -653,24 +661,12 @@ fn call_get_relations_graph(conn: &Connection, args: Value) -> Result<Value, Str
 
     let mut nodes = Vec::new();
     for id in unique_ids {
-        let piece_summary: Option<(String, i32, Option<String>)> = conn.query_row(
-            "SELECT p.collection_id, p.is_active, 
-                    COALESCE(
-                        (SELECT value FROM piece_metadata WHERE piece_id = p.id AND key = 'title'),
-                        (SELECT value FROM piece_metadata WHERE piece_id = p.id AND key = 'name'),
-                        'Piece Summary'
-                    ) AS label
-             FROM pieces p WHERE p.id = ?;",
-            [&id],
-            |row| Ok(Some((row.get(0)?, row.get(1)?, row.get(2)?))),
-        ).unwrap_or(None);
-
-        if let Some((collection_id, is_active_int, label)) = piece_summary {
+        if let Ok(info) = get_piece_info(vibe_path, conn, &id) {
             nodes.push(json!({
                 "id": id,
-                "collection_id": collection_id,
-                "is_active": is_active_int == 1,
-                "label": label
+                "collection_id": info.collection_id,
+                "is_active": info.is_active,
+                "label": info.content
             }));
         }
     }
@@ -761,6 +757,78 @@ fn call_delete_metadata(conn: &Connection, args: Value) -> Result<Value, String>
     ).map_err(|e| format!("Failed to delete metadata: {}", e))?;
 
     Ok(json!({}))
+}
+
+fn parse_vcard_to_text(content: &str) -> String {
+    let mut contact = crate::contacts::ContactJson {
+        first_name: None,
+        last_name: None,
+        formatted_name: "".to_string(),
+        email: None,
+        phone: None,
+        organization: None,
+        title: None,
+    };
+    for line in content.lines() {
+        if line.starts_with("FN:") {
+            contact.formatted_name = line["FN:".len()..].trim().to_string();
+        } else if line.starts_with("EMAIL;") || line.starts_with("EMAIL:") {
+            let parts: Vec<&str> = line.splitn(2, ':').collect();
+            if parts.len() == 2 {
+                contact.email = Some(parts[1].trim().to_string());
+            }
+        } else if line.starts_with("TEL;") || line.starts_with("TEL:") {
+            let parts: Vec<&str> = line.splitn(2, ':').collect();
+            if parts.len() == 2 {
+                contact.phone = Some(parts[1].trim().to_string());
+            }
+        } else if line.starts_with("ORG:") {
+            contact.organization = Some(line["ORG:".len()..].trim().to_string());
+        } else if line.starts_with("TITLE:") {
+            contact.title = Some(line["TITLE:".len()..].trim().to_string());
+        }
+    }
+    crate::contacts::contact_to_text(&contact)
+}
+
+fn parse_ical_to_text(content: &str) -> String {
+    let mut event = crate::calendar::CalendarJson {
+        summary: "".to_string(),
+        start_date: "".to_string(),
+        end_date: "".to_string(),
+        description: None,
+        location: None,
+    };
+    for line in content.lines() {
+        if line.starts_with("SUMMARY:") {
+            event.summary = line["SUMMARY:".len()..].trim().to_string();
+        } else if line.starts_with("DTSTART:") {
+            let val = line["DTSTART:".len()..].trim().to_string();
+            event.start_date = format_dtstamp(&val);
+        } else if line.starts_with("DTEND:") {
+            let val = line["DTEND:".len()..].trim().to_string();
+            event.end_date = format_dtstamp(&val);
+        } else if line.starts_with("DESCRIPTION:") {
+            event.description = Some(line["DESCRIPTION:".len()..].trim().to_string());
+        } else if line.starts_with("LOCATION:") {
+            event.location = Some(line["LOCATION:".len()..].trim().to_string());
+        }
+    }
+    crate::calendar::calendar_to_text(&event)
+}
+
+fn format_dtstamp(val: &str) -> String {
+    if val.len() >= 15 && val.contains('T') {
+        let date_part = &val[0..8]; // 20260712
+        let time_part = &val[9..15]; // 170000
+        format!(
+            "{}-{}-{}T{}:{}:{}Z",
+            &date_part[0..4], &date_part[4..6], &date_part[6..8],
+            &time_part[0..2], &time_part[2..4], &time_part[4..6]
+        )
+    } else {
+        val.to_string()
+    }
 }
 
 #[cfg(test)]
@@ -936,5 +1004,88 @@ mod tests {
             |row| row.get(0)
         ).unwrap();
         assert!(!exists);
+    }
+
+    #[test]
+    fn test_mcp_contacts_and_calendar_metadata_and_reconstruction() {
+        let mut env = TestMcpEnv::new("contacts_cal");
+
+        // 1. Create a contacts collection
+        let contacts_col = create_collection(&env.conn, &env.vibe_root, "My Contacts", "contacts", "contacts").unwrap();
+
+        // 2. Create a contact piece using create_piece tool
+        let contact_json = json!({
+            "first_name": "Alice",
+            "last_name": "Smith",
+            "formatted_name": "Alice Smith",
+            "email": "alice@example.com",
+            "phone": "+987654321",
+            "organization": "Hedgehog Inc",
+            "title": "Researcher"
+        });
+
+        let create_msg = json!({
+            "jsonrpc": "2.0",
+            "method": "tools/call",
+            "params": {
+                "name": "create_piece",
+                "arguments": {
+                    "collection_id": contacts_col.id,
+                    "content": contact_json.to_string(),
+                    "metadata": {
+                        "role": "admin",
+                        "status": "active"
+                    }
+                }
+            },
+            "id": 20
+        });
+
+        let response_str = handle_mcp_message(&env.vibe_root, &mut env.conn, &mut env.session, &serde_json::to_string(&create_msg).unwrap());
+        let res: JsonRpcResponse = serde_json::from_str(&response_str).unwrap();
+        let tools_call_res = res.result.unwrap();
+        assert_eq!(tools_call_res.get("isError").unwrap().as_bool(), Some(false));
+
+        let content_text = tools_call_res.get("content").unwrap().as_array().unwrap()[0].get("text").unwrap().as_str().unwrap();
+        let piece: crate::pieces::Piece = serde_json::from_str(content_text).unwrap();
+
+        // 3. Verify SQLite metadata entries (custom only, no auto-extracted)
+        let role: String = env.conn.query_row(
+            "SELECT value FROM piece_metadata WHERE piece_id = ? AND key = 'role';",
+            [&piece.id],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(role, "admin");
+
+        let has_extracted: bool = env.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM piece_metadata WHERE piece_id = ? AND key = 'name');",
+            [&piece.id],
+            |row| row.get(0),
+        ).unwrap();
+        assert!(!has_extracted);
+
+        // 4. Verify get_piece_details reconstructions
+        let details_msg = json!({
+            "jsonrpc": "2.0",
+            "method": "tools/call",
+            "params": {
+                "name": "get_piece_details",
+                "arguments": {
+                    "id": piece.id
+                }
+            },
+            "id": 21
+        });
+        let details_resp_str = handle_mcp_message(&env.vibe_root, &mut env.conn, &mut env.session, &serde_json::to_string(&details_msg).unwrap());
+        let details_res: JsonRpcResponse = serde_json::from_str(&details_resp_str).unwrap();
+        let details_call_res = details_res.result.unwrap();
+        assert_eq!(details_call_res.get("isError").unwrap().as_bool(), Some(false));
+
+        let details_text = details_call_res.get("content").unwrap().as_array().unwrap()[0].get("text").unwrap().as_str().unwrap();
+        let details_json: Value = serde_json::from_str(details_text).unwrap();
+        let piece_val = details_json.get("piece").unwrap().clone();
+        let detail_obj: PieceDetail = serde_json::from_value(piece_val).unwrap();
+
+        assert_eq!(detail_obj.content, "Contact profile for Alice Smith. Email: alice@example.com. Phone: +987654321. Organization: Hedgehog Inc. Title: Researcher.");
     }
 }

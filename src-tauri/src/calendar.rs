@@ -71,6 +71,7 @@ pub fn ingest_calendar_piece(
     collection_id: &str,
     event: &CalendarJson,
     uri: Option<&str>,
+    metadata: &[(&str, &str)],
     session: &mut Session,
     index: &Index,
 ) -> Result<Piece, CalendarError> {
@@ -130,33 +131,11 @@ pub fn ingest_calendar_piece(
             rusqlite::params![&piece_id, collection_id, uri, &created_at],
         )?;
 
-        // Extract metadata: Event Title (title), Start Date (start_date), End Date (end_date)
-        tx.execute(
-            "INSERT INTO piece_metadata (piece_id, key, value) VALUES (?, 'title', ?);",
-            [&piece_id, &event.summary],
-        )?;
-
-        tx.execute(
-            "INSERT INTO piece_metadata (piece_id, key, value) VALUES (?, 'start_date', ?);",
-            [&piece_id, &event.start_date],
-        )?;
-
-        tx.execute(
-            "INSERT INTO piece_metadata (piece_id, key, value) VALUES (?, 'end_date', ?);",
-            [&piece_id, &event.end_date],
-        )?;
-
-        if let Some(ref desc) = event.description {
+        // Write custom metadata key-value pairs using INSERT OR REPLACE
+        for &(key, val) in metadata {
             tx.execute(
-                "INSERT INTO piece_metadata (piece_id, key, value) VALUES (?, 'description', ?);",
-                [&piece_id, desc],
-            )?;
-        }
-
-        if let Some(ref loc) = event.location {
-            tx.execute(
-                "INSERT INTO piece_metadata (piece_id, key, value) VALUES (?, 'location', ?);",
-                [&piece_id, loc],
+                "INSERT OR REPLACE INTO piece_metadata (piece_id, key, value) VALUES (?, ?, ?);",
+                [&piece_id, key, val],
             )?;
         }
 
@@ -191,7 +170,7 @@ pub fn ingest_calendar_piece(
             let _ = std::fs::remove_file(&piece_file_path);
 
             // Revert memory index
-            let usearch_path = vibe_path.join("vibe.usearch");
+            let usearch_path = vibe_path.join(format!("{}.usearch", folder_path));
             if usearch_path.exists() {
                 if let Some(path_str) = usearch_path.to_str() {
                     let _ = index.load(path_str);
@@ -286,6 +265,7 @@ mod tests {
             &env.collection_id,
             &event,
             Some("file:///doc/cal1.json"),
+            &[("priority", "high"), ("category", "work")],
             &mut env.session,
             &env.index,
         ).unwrap();
@@ -302,27 +282,27 @@ mod tests {
         assert!(disk_content.contains("SUMMARY:Strategy Meeting\n"));
         assert!(disk_content.contains("DTSTART:20260713T090000Z\n"));
 
-        // 3. Verify SQLite metadata entries
-        let title: String = env.conn.query_row(
-            "SELECT value FROM piece_metadata WHERE piece_id = ? AND key = 'title';",
+        // 3. Verify SQLite metadata entries (custom only, no auto-extracted)
+        let priority: String = env.conn.query_row(
+            "SELECT value FROM piece_metadata WHERE piece_id = ? AND key = 'priority';",
             [&piece.id],
             |row| row.get(0),
         ).unwrap();
-        assert_eq!(title, "Strategy Meeting");
+        assert_eq!(priority, "high");
 
-        let start_date: String = env.conn.query_row(
-            "SELECT value FROM piece_metadata WHERE piece_id = ? AND key = 'start_date';",
+        let category: String = env.conn.query_row(
+            "SELECT value FROM piece_metadata WHERE piece_id = ? AND key = 'category';",
             [&piece.id],
             |row| row.get(0),
         ).unwrap();
-        assert_eq!(start_date, "2026-07-13T09:00:00Z");
+        assert_eq!(category, "work");
 
-        let location: String = env.conn.query_row(
-            "SELECT value FROM piece_metadata WHERE piece_id = ? AND key = 'location';",
+        let has_extracted: bool = env.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM piece_metadata WHERE piece_id = ? AND key = 'title');",
             [&piece.id],
             |row| row.get(0),
         ).unwrap();
-        assert_eq!(location, "Online");
+        assert!(!has_extracted);
 
         // 4. Verify vector was added to index
         assert!(env.index.size() >= 1);
@@ -349,6 +329,7 @@ mod tests {
             &contact_cat.id,
             &event,
             None,
+            &[],
             &mut env.session,
             &env.index,
         ).unwrap_err();
@@ -380,6 +361,7 @@ mod tests {
             &env.collection_id,
             &event,
             None,
+            &[],
             &mut env.session,
             &env.index,
         ).unwrap_err();

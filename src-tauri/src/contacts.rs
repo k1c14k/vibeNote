@@ -77,6 +77,7 @@ pub fn ingest_contact_piece(
     collection_id: &str,
     contact: &ContactJson,
     uri: Option<&str>,
+    metadata: &[(&str, &str)],
     session: &mut Session,
     index: &Index,
 ) -> Result<Piece, ContactError> {
@@ -136,37 +137,11 @@ pub fn ingest_contact_piece(
             rusqlite::params![&piece_id, collection_id, uri, &created_at],
         )?;
 
-        // Extract metadata: Name (FN), Email, Phone, Organization, Title
-        tx.execute(
-            "INSERT INTO piece_metadata (piece_id, key, value) VALUES (?, 'name', ?);",
-            [&piece_id, &contact.formatted_name],
-        )?;
-
-        if let Some(ref email) = contact.email {
+        // Write custom metadata key-value pairs using INSERT OR REPLACE
+        for &(key, val) in metadata {
             tx.execute(
-                "INSERT INTO piece_metadata (piece_id, key, value) VALUES (?, 'email', ?);",
-                [&piece_id, email],
-            )?;
-        }
-
-        if let Some(ref phone) = contact.phone {
-            tx.execute(
-                "INSERT INTO piece_metadata (piece_id, key, value) VALUES (?, 'phone', ?);",
-                [&piece_id, phone],
-            )?;
-        }
-
-        if let Some(ref org) = contact.organization {
-            tx.execute(
-                "INSERT INTO piece_metadata (piece_id, key, value) VALUES (?, 'organization', ?);",
-                [&piece_id, org],
-            )?;
-        }
-
-        if let Some(ref title) = contact.title {
-            tx.execute(
-                "INSERT INTO piece_metadata (piece_id, key, value) VALUES (?, 'title', ?);",
-                [&piece_id, title],
+                "INSERT OR REPLACE INTO piece_metadata (piece_id, key, value) VALUES (?, ?, ?);",
+                [&piece_id, key, val],
             )?;
         }
 
@@ -201,7 +176,7 @@ pub fn ingest_contact_piece(
             let _ = std::fs::remove_file(&piece_file_path);
 
             // Revert memory index
-            let usearch_path = vibe_path.join("vibe.usearch");
+            let usearch_path = vibe_path.join(format!("{}.usearch", folder_path));
             if usearch_path.exists() {
                 if let Some(path_str) = usearch_path.to_str() {
                     let _ = index.load(path_str);
@@ -299,6 +274,7 @@ mod tests {
             &env.collection_id,
             &contact,
             Some("file:///doc/contact1.json"),
+            &[("role", "admin"), ("status", "active")],
             &mut env.session,
             &env.index,
         ).unwrap();
@@ -315,27 +291,27 @@ mod tests {
         assert!(disk_content.contains("FN:Alice Smith\n"));
         assert!(disk_content.contains("EMAIL;TYPE=INTERNET:alice@example.com\n"));
 
-        // 3. Verify SQLite metadata entries
-        let name: String = env.conn.query_row(
-            "SELECT value FROM piece_metadata WHERE piece_id = ? AND key = 'name';",
+        // 3. Verify SQLite metadata entries (custom only, no auto-extracted)
+        let role: String = env.conn.query_row(
+            "SELECT value FROM piece_metadata WHERE piece_id = ? AND key = 'role';",
             [&piece.id],
             |row| row.get(0),
         ).unwrap();
-        assert_eq!(name, "Alice Smith");
+        assert_eq!(role, "admin");
 
-        let email: String = env.conn.query_row(
-            "SELECT value FROM piece_metadata WHERE piece_id = ? AND key = 'email';",
+        let status: String = env.conn.query_row(
+            "SELECT value FROM piece_metadata WHERE piece_id = ? AND key = 'status';",
             [&piece.id],
             |row| row.get(0),
         ).unwrap();
-        assert_eq!(email, "alice@example.com");
+        assert_eq!(status, "active");
 
-        let phone: String = env.conn.query_row(
-            "SELECT value FROM piece_metadata WHERE piece_id = ? AND key = 'phone';",
+        let has_extracted: bool = env.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM piece_metadata WHERE piece_id = ? AND key = 'name');",
             [&piece.id],
             |row| row.get(0),
         ).unwrap();
-        assert_eq!(phone, "+987654321");
+        assert!(!has_extracted);
 
         // 4. Verify vector was added to index
         assert!(env.index.size() >= 1);
@@ -364,6 +340,7 @@ mod tests {
             &text_cat.id,
             &contact,
             None,
+            &[],
             &mut env.session,
             &env.index,
         ).unwrap_err();
@@ -403,6 +380,7 @@ mod tests {
             &env.collection_id,
             &contact,
             None,
+            &[],
             &mut env.session,
             &env.index,
         ).unwrap_err();
