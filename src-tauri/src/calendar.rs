@@ -47,6 +47,21 @@ pub fn serialize_ical(event: &CalendarJson, piece_id: &str, dtstamp: &str) -> St
     ics
 }
 
+/// Converts a CalendarJson payload into a natural language description paragraph.
+pub fn calendar_to_text(event: &CalendarJson) -> String {
+    let mut parts = Vec::new();
+    parts.push(format!("Calendar event: {}.", event.summary));
+    parts.push(format!("Start time: {}.", event.start_date));
+    parts.push(format!("End time: {}.", event.end_date));
+    if let Some(ref desc) = event.description {
+        parts.push(format!("Description: {}.", desc));
+    }
+    if let Some(ref loc) = event.location {
+        parts.push(format!("Location: {}.", loc));
+    }
+    parts.join(" ")
+}
+
 /// Ingests a calendar piece: serializes payload to ICS, saves it on disk, and registers it in SQLite.
 pub fn ingest_calendar_piece(
     conn: &mut Connection,
@@ -333,5 +348,36 @@ mod tests {
 
         // Confirms that the created ics file was deleted
         assert_eq!(fs::read_dir(&calendar_dir).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn test_calendar_to_text() {
+        let event_full = CalendarJson {
+            summary: "Project Launch".to_string(),
+            start_date: "2026-07-12T18:00:00Z".to_string(),
+            end_date: "2026-07-12T20:00:00Z".to_string(),
+            description: Some("Launch party for vibeNote MVP".to_string()),
+            location: Some("Tauri HQ".to_string()),
+        };
+
+        let text_full = calendar_to_text(&event_full);
+        assert_eq!(
+            text_full,
+            "Calendar event: Project Launch. Start time: 2026-07-12T18:00:00Z. End time: 2026-07-12T20:00:00Z. Description: Launch party for vibeNote MVP. Location: Tauri HQ."
+        );
+
+        let event_min = CalendarJson {
+            summary: "Minimal Event".to_string(),
+            start_date: "2026-07-12T18:00:00Z".to_string(),
+            end_date: "2026-07-12T19:00:00Z".to_string(),
+            description: None,
+            location: None,
+        };
+
+        let text_min = calendar_to_text(&event_min);
+        assert_eq!(
+            text_min,
+            "Calendar event: Minimal Event. Start time: 2026-07-12T18:00:00Z. End time: 2026-07-12T19:00:00Z."
+        );
     }
 }

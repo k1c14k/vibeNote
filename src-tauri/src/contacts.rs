@@ -49,6 +49,25 @@ pub fn serialize_vcard(contact: &ContactJson) -> String {
     vcard
 }
 
+/// Converts a ContactJson payload into a natural language description paragraph.
+pub fn contact_to_text(contact: &ContactJson) -> String {
+    let mut parts = Vec::new();
+    parts.push(format!("Contact profile for {}.", contact.formatted_name));
+    if let Some(ref email) = contact.email {
+        parts.push(format!("Email: {}.", email));
+    }
+    if let Some(ref phone) = contact.phone {
+        parts.push(format!("Phone: {}.", phone));
+    }
+    if let Some(ref org) = contact.organization {
+        parts.push(format!("Organization: {}.", org));
+    }
+    if let Some(ref title) = contact.title {
+        parts.push(format!("Title: {}.", title));
+    }
+    parts.join(" ")
+}
+
 /// Ingests a contact piece: serializes payload to vCard, saves it on disk, and registers it in SQLite.
 pub fn ingest_contact_piece(
     conn: &mut Connection,
@@ -343,5 +362,37 @@ mod tests {
 
         // Confirms that the created vcf file was deleted
         assert_eq!(fs::read_dir(&contact_dir).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn test_contact_to_text() {
+        let contact_full = ContactJson {
+            first_name: Some("John".to_string()),
+            last_name: Some("Doe".to_string()),
+            formatted_name: "John Doe".to_string(),
+            email: Some("john@example.com".to_string()),
+            phone: Some("+123456789".to_string()),
+            organization: Some("Acme Corp".to_string()),
+            title: Some("Engineer".to_string()),
+        };
+
+        let text_full = contact_to_text(&contact_full);
+        assert_eq!(
+            text_full,
+            "Contact profile for John Doe. Email: john@example.com. Phone: +123456789. Organization: Acme Corp. Title: Engineer."
+        );
+
+        let contact_min = ContactJson {
+            first_name: None,
+            last_name: None,
+            formatted_name: "Minimal Contact".to_string(),
+            email: None,
+            phone: None,
+            organization: None,
+            title: None,
+        };
+
+        let text_min = contact_to_text(&contact_min);
+        assert_eq!(text_min, "Contact profile for Minimal Contact.");
     }
 }
