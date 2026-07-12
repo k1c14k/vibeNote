@@ -72,20 +72,20 @@ Because vibeNote has complex relational requirements (relations, metadata, colle
      * *Plain Text pieces:* `.md` or `.txt` files.
      * *Contacts (PIM) pieces:* `.vcf` (vCard) files.
      * *Calendar Event pieces:* `.ics` (iCal/vCal) files.
-     * *Path template:* `<vibe_path>/<category>/<piece_id>.<extension>`
-   * **Structured Category Ingestion & Vectorization Workflow:**
-     For pieces in categories of type `contacts` or `calendar`, the data is accepted via the MCP tools and UI as a structured JSON object. The Rust backend handles ingestion as follows:
+     * *Path template:* `<vibe_path>/<collection_folder>/<piece_id>.<extension>`
+   * **Structured Collection Ingestion & Vectorization Workflow:**
+     For pieces in collections of type `contacts` or `calendar`, the data is accepted via the MCP tools and UI as a structured JSON object. The Rust backend handles ingestion as follows:
      1. **Storage:** The JSON payload is serialized and written to disk as a standard `.vcf` or `.ics` file.
      2. **Vectorization:** The backend converts the structured JSON representation into natural language text descriptive format (e.g. *"Contact profile for John Doe, Email: john@example.com, Phone: +123456789. Department: Engineering."*) optimized for semantic embedding.
      3. **Indexing:** The natural language string is vectorized by the embedding engine and stored in the vector index.
      4. **Metadata Extraction:** Core metadata attributes are extracted from the JSON and stored as structured columns in the SQLite database to facilitate fast relational queries and filters.
-   * **No Nested Categories:** Subdirectories under a Vibe cannot be nested. Multi-group separation is achieved by creating multiple distinct category folders at the same root level (e.g. `<vibe_path>/contacts_work/` and `<vibe_path>/contacts_personal/`).
+   * **No Nested Collections:** Subdirectories under a Vibe cannot be nested. Multi-group separation is achieved by creating multiple distinct collection folders at the same root level (e.g. `<vibe_path>/contacts_work/` and `<vibe_path>/contacts_personal/`).
 
 2. **SQLite (The Relational Core & Event Log)**
    * **Role:** Stores metadata, Piece lifecycle events, collections, relations, and index mapping.
    * **Schema Design:**
-     * `categories`: `id` (UUID/text), `name`, `type` (`text` | `contacts` | `calendar`), `folder_path`.
-     * `pieces`: `id` (UUID), `category_id`, `file_path`, `content_hash`, `token_count`, `created_at`, `is_active` (boolean).
+     * `collections`: `id` (UUID/text), `name`, `type` (`text` | `contacts` | `calendar`), `folder_path`.
+     * `pieces`: `id` (UUID), `collection_id`, `uri`, `created_at`, `is_active` (boolean).
      * `piece_history`: `parent_piece_id`, `child_piece_id`, `change_type` (`replacement` | `extension`), `timestamp`.
      * `relations`: `source_piece_id`, `target_piece_id`, `relation_type` (text), `created_at`.
    * **Why SQLite?** Zero setup, fast, transactional, and runs directly inside the Tauri Rust core using the synchronous **`rusqlite`** crate.
@@ -167,11 +167,14 @@ One of vibeNote's primary differentiators is exposing its database and RAG engin
 
 #### Exposed MCP Tools:
 * `search_vibe(query: string, limit?: number)`: Runs a semantic RAG query across all active Pieces in a Vibe.
-* `search_category(query: string, category_id: string, limit?: number, metadata_filter?: object)`: Performs a semantic RAG query filtered by a specific category (Collection ID) and additional metadata properties.
+* `search_collection(query: string, collection_id: string, limit?: number)`: Performs a semantic RAG query filtered by a specific collection (Collection ID).
 * `get_piece_details(id: string)`: Retrieves a specific Piece, its full metadata, history, and relations.
 * `create_piece(content: string, collection_id: string, metadata?: object)`: Adds a new Piece to a Collection.
 * `link_pieces(source_id: string, target_id: string, relation_type: string)`: Explicitly creates a semantic connection between two items.
 * `get_relations_graph(piece_id: string)`: Returns the local network of related Pieces.
+* `list_collections()`: Returns a list of all collections (UUID, name, type, and folder path) in the current Vibe.
+* `set_metadata(piece_id: string, key: string, value: string)`: Sets a specific metadata key-value pair for a Piece.
+* `delete_metadata(piece_id: string, key: string)`: Deletes a specific metadata key for a Piece.
 
 ---
 

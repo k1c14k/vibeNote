@@ -5,6 +5,7 @@ pub mod pieces;
 pub mod contacts;
 pub mod calendar;
 pub mod vector_index;
+pub mod mcp;
 
 
 

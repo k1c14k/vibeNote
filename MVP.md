@@ -97,7 +97,7 @@ Integrate tool execution over SSE and stdio CLI pipes.
 
 *   **Task 5.1: Rust-Native MCP Router**
     *   Build a request handler responding to MCP server actions (tools listing, tools execution).
-    *   Implement tools: `search_vibe`, `search_category`, `create_piece`, `get_piece_details`, `link_pieces`, `get_relations_graph`.
+    *   Implement tools: `search_vibe`, `search_collection`, `create_piece`, `get_piece_details`, `link_pieces`, `get_relations_graph`, `list_collections`, `set_metadata`, `delete_metadata`.
 *   **Task 5.2: Stdio CLI Mode (`--mcp`) & System Tray Shell**
     *   If arguments contain `--mcp`, launch Tauri in **Tray-Minimized Hybrid Mode** (no primary window spawned, running background stdio pipe loops, showing an icon in the tray).
 *   **Task 5.3: Background SSE Server**
