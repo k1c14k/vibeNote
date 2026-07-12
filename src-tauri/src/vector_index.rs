@@ -27,27 +27,40 @@ pub fn create_default_index() -> Result<Index, VectorIndexError> {
     Index::new(&options).map_err(|e| VectorIndexError::USearch(format!("{:?}", e)))
 }
 
-/// Loads an existing index or creates a new one at `<vibe_path>/vibe.usearch` with a capacity of 100,000 vectors.
-pub fn load_or_create_index(vibe_path: &Path) -> Result<Index, VectorIndexError> {
-    let usearch_path = vibe_path.join("vibe.usearch");
+/// Loads an existing index or creates a new one at `<vibe_path>/<index_name>.usearch` with an initial capacity of 500 vectors.
+pub fn load_or_create_index(vibe_path: &Path, index_name: &str) -> Result<Index, VectorIndexError> {
+    let usearch_path = vibe_path.join(format!("{}.usearch", index_name));
     let index = create_default_index()?;
 
     if usearch_path.exists() {
         let path_str = usearch_path.to_str().ok_or(VectorIndexError::InvalidPath)?;
         index.load(path_str).map_err(|e| VectorIndexError::USearch(format!("Failed to load index from {}: {:?}", path_str, e)))?;
     } else {
-        // New index: pre-allocate memory for 100,000 vectors
-        index.reserve(100_000).map_err(|e| VectorIndexError::USearch(format!("Failed to reserve capacity: {:?}", e)))?;
+        // New index: pre-allocate memory for 500 vectors
+        index.reserve(500).map_err(|e| VectorIndexError::USearch(format!("Failed to reserve capacity: {:?}", e)))?;
     }
 
     Ok(index)
 }
 
-/// Saves the index to `<vibe_path>/vibe.usearch`.
-pub fn save_index(index: &Index, vibe_path: &Path) -> Result<(), VectorIndexError> {
-    let usearch_path = vibe_path.join("vibe.usearch");
+/// Saves the index to `<vibe_path>/<index_name>.usearch`.
+pub fn save_index(index: &Index, vibe_path: &Path, index_name: &str) -> Result<(), VectorIndexError> {
+    let usearch_path = vibe_path.join(format!("{}.usearch", index_name));
     let path_str = usearch_path.to_str().ok_or(VectorIndexError::InvalidPath)?;
     index.save(path_str).map_err(|e| VectorIndexError::USearch(format!("Failed to save index to {}: {:?}", path_str, e)))?;
+    Ok(())
+}
+
+/// Adds a vector to the USearch index, dynamically growing capacity by 500 when size reaches capacity.
+pub fn add_vector(index: &Index, vector_id: u64, vector: &[f32]) -> Result<(), VectorIndexError> {
+    let size = index.size();
+    let capacity = index.capacity();
+    if size >= capacity {
+        index.reserve(capacity + 500)
+            .map_err(|e| VectorIndexError::USearch(format!("Failed to grow capacity: {:?}", e)))?;
+    }
+    index.add(vector_id, vector)
+        .map_err(|e| VectorIndexError::USearch(format!("Failed to add vector: {:?}", e)))?;
     Ok(())
 }
 
@@ -127,32 +140,63 @@ pub fn query_pieces(
     let embedding = crate::model::generate_embedding(session, query_text)
         .map_err(|e| VectorIndexError::OnnxModel(e.to_string()))?;
 
-    // 2. Load global index and search for top-k candidates
-    let index = load_or_create_index(vibe_path)?;
-    let search_results = index
-        .search(&embedding, options.top_k)
-        .map_err(|e| VectorIndexError::USearch(format!("{:?}", e)))?;
+    // 2. Load index/indexes and search for candidates
+    let mut candidates = Vec::new();
 
-    let keys = search_results.keys;
-    let distances = search_results.distances;
+    if let Some(ref cid) = options.collection_id {
+        // Look up collection's folder path
+        let folder_path_opt: Option<String> = conn.query_row(
+            "SELECT folder_path FROM collections WHERE id = ?;",
+            [cid],
+            |row| row.get(0),
+        ).optional()?;
 
-    if keys.is_empty() {
-        return Ok(vec![]);
-    }
+        let folder_path = match folder_path_opt {
+            Some(path) => path,
+            None => return Ok(vec![]),
+        };
 
-    // 3. Map vector keys -> piece IDs, preserving order
-    let mut candidates: Vec<(String, f32)> = Vec::with_capacity(keys.len());
-    for (key, dist) in keys.iter().zip(distances.iter()) {
-        if let Some(piece_id) = get_piece_id(conn, *key)? {
-            candidates.push((piece_id, *dist));
+        let index = load_or_create_index(vibe_path, &folder_path)?;
+        let search_results = index
+            .search(&embedding, options.top_k)
+            .map_err(|e| VectorIndexError::USearch(format!("{:?}", e)))?;
+        for (key, dist) in search_results.keys.iter().zip(search_results.distances.iter()) {
+            if let Some(piece_id) = get_piece_id(conn, *key)? {
+                candidates.push((piece_id, *dist));
+            }
         }
+    } else {
+        // Query globally: get all collections
+        let mut stmt = conn.prepare("SELECT folder_path FROM collections;")?;
+        let folder_paths = stmt.query_map([], |row| row.get::<_, String>(0))?
+            .filter_map(|r| r.ok())
+            .collect::<Vec<String>>();
+
+        for folder_path in folder_paths {
+            let usearch_path = vibe_path.join(format!("{}.usearch", folder_path));
+            if usearch_path.exists() {
+                let index = load_or_create_index(vibe_path, &folder_path)?;
+                let search_results = index
+                    .search(&embedding, options.top_k)
+                    .map_err(|e| VectorIndexError::USearch(format!("{:?}", e)))?;
+                for (key, dist) in search_results.keys.iter().zip(search_results.distances.iter()) {
+                    if let Some(piece_id) = get_piece_id(conn, *key)? {
+                        candidates.push((piece_id, *dist));
+                    }
+                }
+            }
+        }
+
+        // Sort all candidates by distance ascending
+        candidates.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        candidates.truncate(options.top_k);
     }
 
     if candidates.is_empty() {
         return Ok(vec![]);
     }
 
-    // 4. SQL filter: active status + optional collection
+    // 3. SQL filter: active status + optional collection
     let candidate_ids: Vec<&str> = candidates.iter().map(|(id, _)| id.as_str()).collect();
 
     // Build parameterised IN clause
@@ -193,7 +237,7 @@ pub fn query_pieces(
             .collect()
     };
 
-    // 5. Re-rank: preserve USearch order, convert distance -> similarity
+    // 4. Re-rank: preserve USearch order, convert distance -> similarity
     let results: Vec<QueryResult> = candidates
         .into_iter()
         .filter(|(piece_id, _)| surviving.contains(piece_id))
@@ -245,13 +289,32 @@ mod tests {
     }
 
     #[test]
+    fn test_dynamic_resizing_add_vector() {
+        let index = create_default_index().unwrap();
+        index.reserve(5).unwrap();
+        let initial_capacity = index.capacity();
+
+        let vec = vec![0.0f32; 384];
+
+        for i in 0..initial_capacity {
+            add_vector(&index, i as u64, &vec).unwrap();
+        }
+        assert_eq!(index.size(), initial_capacity);
+        assert_eq!(index.capacity(), initial_capacity);
+
+        add_vector(&index, initial_capacity as u64, &vec).unwrap();
+        assert_eq!(index.size(), initial_capacity + 1);
+        assert!(index.capacity() >= initial_capacity + 500);
+    }
+
+    #[test]
     fn test_save_load_and_vector_ops() {
         let dir = TestDir::new();
         let vibe_path = &dir.path;
         
         // 1. Create and add vector
-        let index = load_or_create_index(vibe_path).unwrap();
-        assert!(index.capacity() >= 100_000);
+        let index = load_or_create_index(vibe_path, "vibe").unwrap();
+        assert!(index.capacity() >= 500);
         assert_eq!(index.size(), 0);
 
         let mut vec = vec![0.0f32; 384];
@@ -261,11 +324,11 @@ mod tests {
         assert_eq!(index.size(), 1);
 
         // 2. Save
-        save_index(&index, vibe_path).unwrap();
+        save_index(&index, vibe_path, "vibe").unwrap();
         assert!(vibe_path.join("vibe.usearch").exists());
 
         // 3. Load from disk
-        let loaded_index = load_or_create_index(vibe_path).unwrap();
+        let loaded_index = load_or_create_index(vibe_path, "vibe").unwrap();
         assert_eq!(loaded_index.size(), 1);
 
         // 4. Search check
@@ -331,7 +394,7 @@ mod tests {
             let cat = create_collection(&conn, &vibe_root, "Notes", "text", "notes").unwrap();
 
             let session = init_model().expect("Failed to init model");
-            let index = load_or_create_index(&vibe_root).expect("Failed to load/create index");
+            let index = load_or_create_index(&vibe_root, &cat.folder_path).expect("Failed to load/create index");
 
             QueryTestEnv { vibe_root, conn, session, index, collection_id: cat.id }
         }

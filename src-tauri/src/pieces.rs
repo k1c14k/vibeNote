@@ -121,11 +121,10 @@ pub fn ingest_text_piece(
         let embedding = crate::model::generate_embedding(session, content)?;
 
         // Add to memory index
-        index.add(vector_id, &embedding)
-            .map_err(|e| PieceError::VectorIndex(crate::vector_index::VectorIndexError::USearch(format!("{:?}", e))))?;
+        crate::vector_index::add_vector(index, vector_id, &embedding)?;
 
         // Save index to disk
-        crate::vector_index::save_index(index, vibe_path)?;
+        crate::vector_index::save_index(index, vibe_path, &folder_path)?;
 
         tx.commit()?;
         Ok(created_at)
@@ -248,11 +247,10 @@ pub fn replace_piece(
         index.remove(old_vector_id)
             .map_err(|e| PieceError::VectorIndex(crate::vector_index::VectorIndexError::USearch(format!("{:?}", e))))?;
         let embedding = crate::model::generate_embedding(session, content)?;
-        index.add(new_vector_id, &embedding)
-            .map_err(|e| PieceError::VectorIndex(crate::vector_index::VectorIndexError::USearch(format!("{:?}", e))))?;
+        crate::vector_index::add_vector(index, new_vector_id, &embedding)?;
 
         // Save index
-        crate::vector_index::save_index(index, vibe_path)?;
+        crate::vector_index::save_index(index, vibe_path, &folder_path)?;
 
         tx.commit()?;
         Ok(created_at)
@@ -364,11 +362,10 @@ pub fn extend_piece(
 
         // Vectorize and add to index
         let embedding = crate::model::generate_embedding(session, content)?;
-        index.add(vector_id, &embedding)
-            .map_err(|e| PieceError::VectorIndex(crate::vector_index::VectorIndexError::USearch(format!("{:?}", e))))?;
+        crate::vector_index::add_vector(index, vector_id, &embedding)?;
 
         // Save index
-        crate::vector_index::save_index(index, vibe_path)?;
+        crate::vector_index::save_index(index, vibe_path, &folder_path)?;
 
         tx.commit()?;
         Ok(created_at)
@@ -517,7 +514,7 @@ mod tests {
             let cat = create_collection(&conn, &vibe_root, "My Notes", "text", "notes").unwrap();
 
             let session = crate::model::init_model().expect("Failed to init model in TestEnv");
-            let index = crate::vector_index::load_or_create_index(&vibe_root)
+            let index = crate::vector_index::load_or_create_index(&vibe_root, &cat.folder_path)
                 .expect("Failed to load/create vector index in TestEnv");
 
             TestEnv { vibe_root, conn, collection_id: cat.id, session, index }

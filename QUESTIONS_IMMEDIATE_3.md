@@ -31,10 +31,10 @@ When the vibeNote binary is spawned by an IDE extension or agent with the stdio 
 ### 3. USearch HNSW Index Capacity Initialization
 HNSW indexes generally require a predefined maximum capacity (maximum number of vectors) to allocate graph memory correctly. How should vibeNote handle this constraint?
 
-*   **[X] Option A: Large Static Limit Default (e.g., 100,000 vectors)**
+*   **[ ] Option A: Large Static Limit Default (e.g., 100,000 vectors)**
     *   *Key Benefits:* Simple implementation; covers 99.9% of personal note-taking workloads; zero runtime overhead.
-*   **[ ] Option B: Dynamic Resizing Index Configuration**
-    *   *Key Benefits:* True scalability; when SQLite counts approach 90% of current USearch capacity, the backend automatically instantiates a new USearch index with doubled capacity, copies all vectors, saves it, and deletes the old one.
-    *   *Key Drawbacks:* Performance overhead when re-indexing occurs.
+*   **[X] Option B: Dynamic Resizing Index Configuration**
+    *   *Key Benefits:* True scalability; growing index capacity dynamically by multiples of 500 vectors whenever size reaches current capacity avoids allocating large unused memory blocks for multiple indexes.
+    *   *Key Drawbacks:* Small performance overhead during reserve/allocation when the limit is reached.
 
 Additional consideration in future: when 70-80% of capacity perform defragmentation as it reduces capacity.

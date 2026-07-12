@@ -169,11 +169,10 @@ pub fn ingest_calendar_piece(
             .map_err(PieceError::Onnx)?;
 
         // Add to memory index
-        index.add(vector_id, &embedding)
-            .map_err(|e| PieceError::VectorIndex(crate::vector_index::VectorIndexError::USearch(format!("{:?}", e))))?;
+        crate::vector_index::add_vector(index, vector_id, &embedding)?;
 
         // Save index to disk
-        crate::vector_index::save_index(index, vibe_path)?;
+        crate::vector_index::save_index(index, vibe_path, &folder_path)?;
 
         tx.commit()?;
         Ok(created_at)
@@ -234,7 +233,7 @@ mod tests {
             let cat = create_collection(&conn, &vibe_root, "My Calendar", "calendar", "calendar").unwrap();
 
             let session = crate::model::init_model().expect("Failed to init model in TestEnv");
-            let index = crate::vector_index::load_or_create_index(&vibe_root)
+            let index = crate::vector_index::load_or_create_index(&vibe_root, &cat.folder_path)
                 .expect("Failed to load/create vector index in TestEnv");
 
             TestEnv { vibe_root, conn, collection_id: cat.id, session, index }
