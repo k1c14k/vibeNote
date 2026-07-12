@@ -1,6 +1,8 @@
 use std::path::Path;
 use rusqlite::Connection;
 use uuid::Uuid;
+use ort::session::Session;
+use usearch::Index;
 use crate::pieces::{Piece, PieceError};
 
 #[derive(Debug, thiserror::Error)]
@@ -69,6 +71,8 @@ pub fn ingest_calendar_piece(
     category_id: &str,
     event: &CalendarJson,
     uri: Option<&str>,
+    session: &mut Session,
+    index: &Index,
 ) -> Result<Piece, CalendarError> {
     // 0. Validate fail-fast character and precise token limits of the natural language conversion
     let nl_text = calendar_to_text(event);
@@ -104,8 +108,9 @@ pub fn ingest_calendar_piece(
     let file_name = format!("{}.ics", piece_id);
     let piece_file_path = category_dir.join(&file_name);
 
-    // 5. Database updates inside transaction to get timestamp and insert rows
-    let db_result = (|| -> Result<String, rusqlite::Error> {
+    // 5. DB changes + Vector changes inside transaction coordinator
+    let mut vector_id_opt = None;
+    let mut run_tx_sequence = |conn: &mut Connection, vector_id_opt: &mut Option<u64>| -> Result<String, PieceError> {
         let tx = conn.transaction()?;
 
         // Retrieve current timestamp
@@ -115,18 +120,9 @@ pub fn ingest_calendar_piece(
             |row| row.get(0),
         )?;
 
-        // Serialize calendar and write to disk
+        // Serialize calendar and write to disk (timestamp is needed for DTSTAMP)
         let ics_content = serialize_ical(event, &piece_id, &created_at);
-        std::fs::write(&piece_file_path, &ics_content).map_err(|e| {
-            // Mapping IO error to rusqlite::Error via standard wrapper is hard, but we can do it outside transaction or map it
-            // Let's write the file inside transaction to rollback if it fails, but let's catch it.
-            // Actually, we can write the file outside/before the transaction, but we need the SQLite timestamp first.
-            // That's why we fetch timestamp -> write file -> execute queries -> commit.
-            // If std::fs::write fails, we return an error that aborts the closure.
-            // We use a custom SQL error or other mechanism to abort.
-            // Let's use a dummy query error or just map it.
-            rusqlite::Error::ToSqlConversionFailure(Box::new(e))
-        })?;
+        std::fs::write(&piece_file_path, &ics_content).map_err(PieceError::Io)?;
 
         // Insert piece record
         tx.execute(
@@ -164,11 +160,26 @@ pub fn ingest_calendar_piece(
             )?;
         }
 
+        // Get/create vector ID mapping
+        let vector_id = crate::vector_index::get_or_create_vector_id(&tx, &piece_id)?;
+        *vector_id_opt = Some(vector_id);
+
+        // Generate embedding from natural language text representation
+        let embedding = crate::model::generate_embedding(session, &nl_text)
+            .map_err(PieceError::Onnx)?;
+
+        // Add to memory index
+        index.add(vector_id, &embedding)
+            .map_err(|e| PieceError::VectorIndex(crate::vector_index::VectorIndexError::USearch(format!("{:?}", e))))?;
+
+        // Save index to disk
+        crate::vector_index::save_index(index, vibe_path)?;
+
         tx.commit()?;
         Ok(created_at)
-    })();
+    };
 
-    match db_result {
+    match run_tx_sequence(conn, &mut vector_id_opt).map_err(CalendarError::Piece) {
         Ok(created_at) => Ok(Piece {
             id: piece_id,
             category_id: category_id.to_string(),
@@ -177,9 +188,20 @@ pub fn ingest_calendar_piece(
             is_active: true,
         }),
         Err(err) => {
-            // Cleanup disk file on DB insert failure
+            // Cleanup disk file on failure
             let _ = std::fs::remove_file(&piece_file_path);
-            Err(CalendarError::Piece(PieceError::Db(err)))
+
+            // Revert memory index
+            let usearch_path = vibe_path.join("vibe.usearch");
+            if usearch_path.exists() {
+                if let Some(path_str) = usearch_path.to_str() {
+                    let _ = index.load(path_str);
+                }
+            } else if let Some(vid) = vector_id_opt {
+                let _ = index.remove(vid);
+            }
+
+            Err(err)
         }
     }
 }
@@ -196,6 +218,8 @@ mod tests {
         vibe_root: PathBuf,
         conn: Connection,
         category_id: String,
+        session: ort::session::Session,
+        index: usearch::Index,
     }
 
     impl TestEnv {
@@ -209,7 +233,11 @@ mod tests {
 
             let cat = create_category(&conn, &vibe_root, "My Calendar", "calendar", "calendar").unwrap();
 
-            TestEnv { vibe_root, conn, category_id: cat.id }
+            let session = crate::model::init_model().expect("Failed to init model in TestEnv");
+            let index = crate::vector_index::load_or_create_index(&vibe_root)
+                .expect("Failed to load/create vector index in TestEnv");
+
+            TestEnv { vibe_root, conn, category_id: cat.id, session, index }
         }
     }
 
@@ -259,6 +287,8 @@ mod tests {
             &env.category_id,
             &event,
             Some("file:///doc/cal1.json"),
+            &mut env.session,
+            &env.index,
         ).unwrap();
 
         // 1. Verify returned piece metadata
@@ -294,6 +324,9 @@ mod tests {
             |row| row.get(0),
         ).unwrap();
         assert_eq!(location, "Online");
+
+        // 4. Verify vector was added to index
+        assert!(env.index.size() >= 1);
     }
 
     #[test]
@@ -317,6 +350,8 @@ mod tests {
             &contact_cat.id,
             &event,
             None,
+            &mut env.session,
+            &env.index,
         ).unwrap_err();
 
         assert!(matches!(err, CalendarError::Piece(PieceError::InvalidCategoryType(_, _, _))));
@@ -346,6 +381,8 @@ mod tests {
             &env.category_id,
             &event,
             None,
+            &mut env.session,
+            &env.index,
         ).unwrap_err();
 
         assert!(matches!(err, CalendarError::Piece(PieceError::Db(_))));

@@ -4918,6 +4918,7 @@ version = "0.1.0"
 dependencies = [
  "ical",
  "libdbus-sys",
+ "ndarray",
  "notify",
  "ort",
  "rusqlite",

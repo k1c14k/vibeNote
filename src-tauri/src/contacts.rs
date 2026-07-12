@@ -1,6 +1,8 @@
 use std::path::Path;
 use rusqlite::Connection;
 use uuid::Uuid;
+use ort::session::Session;
+use usearch::Index;
 use crate::pieces::{Piece, PieceError};
 
 #[derive(Debug, thiserror::Error)]
@@ -75,6 +77,8 @@ pub fn ingest_contact_piece(
     category_id: &str,
     contact: &ContactJson,
     uri: Option<&str>,
+    session: &mut Session,
+    index: &Index,
 ) -> Result<Piece, ContactError> {
     // 0. Validate fail-fast character and precise token limits of the natural language conversion
     let nl_text = contact_to_text(contact);
@@ -114,8 +118,9 @@ pub fn ingest_contact_piece(
     let vcard_content = serialize_vcard(contact);
     std::fs::write(&piece_file_path, &vcard_content).map_err(PieceError::Io)?;
 
-    // 6. Database updates inside transaction
-    let db_result = (|| -> Result<String, rusqlite::Error> {
+    // 6. DB changes + Vector changes inside transaction coordinator
+    let mut vector_id_opt = None;
+    let mut run_tx_sequence = |conn: &mut Connection, vector_id_opt: &mut Option<u64>| -> Result<String, PieceError> {
         let tx = conn.transaction()?;
 
         // Retrieve current timestamp
@@ -165,11 +170,26 @@ pub fn ingest_contact_piece(
             )?;
         }
 
+        // Get/create vector ID mapping
+        let vector_id = crate::vector_index::get_or_create_vector_id(&tx, &piece_id)?;
+        *vector_id_opt = Some(vector_id);
+
+        // Generate embedding from natural language text representation
+        let embedding = crate::model::generate_embedding(session, &nl_text)
+            .map_err(PieceError::Onnx)?;
+
+        // Add to memory index
+        index.add(vector_id, &embedding)
+            .map_err(|e| PieceError::VectorIndex(crate::vector_index::VectorIndexError::USearch(format!("{:?}", e))))?;
+
+        // Save index to disk
+        crate::vector_index::save_index(index, vibe_path)?;
+
         tx.commit()?;
         Ok(created_at)
-    })();
+    };
 
-    match db_result {
+    match run_tx_sequence(conn, &mut vector_id_opt).map_err(ContactError::Piece) {
         Ok(created_at) => Ok(Piece {
             id: piece_id,
             category_id: category_id.to_string(),
@@ -178,9 +198,20 @@ pub fn ingest_contact_piece(
             is_active: true,
         }),
         Err(err) => {
-            // Cleanup disk file on DB insert failure
+            // Cleanup disk file on failure
             let _ = std::fs::remove_file(&piece_file_path);
-            Err(ContactError::Piece(PieceError::Db(err)))
+
+            // Revert memory index
+            let usearch_path = vibe_path.join("vibe.usearch");
+            if usearch_path.exists() {
+                if let Some(path_str) = usearch_path.to_str() {
+                    let _ = index.load(path_str);
+                }
+            } else if let Some(vid) = vector_id_opt {
+                let _ = index.remove(vid);
+            }
+
+            Err(err)
         }
     }
 }
@@ -197,6 +228,8 @@ mod tests {
         vibe_root: PathBuf,
         conn: Connection,
         category_id: String,
+        session: ort::session::Session,
+        index: usearch::Index,
     }
 
     impl TestEnv {
@@ -210,7 +243,11 @@ mod tests {
 
             let cat = create_category(&conn, &vibe_root, "My Contacts", "contacts", "contacts").unwrap();
 
-            TestEnv { vibe_root, conn, category_id: cat.id }
+            let session = crate::model::init_model().expect("Failed to init model in TestEnv");
+            let index = crate::vector_index::load_or_create_index(&vibe_root)
+                .expect("Failed to load/create vector index in TestEnv");
+
+            TestEnv { vibe_root, conn, category_id: cat.id, session, index }
         }
     }
 
@@ -263,6 +300,8 @@ mod tests {
             &env.category_id,
             &contact,
             Some("file:///doc/contact1.json"),
+            &mut env.session,
+            &env.index,
         ).unwrap();
 
         // 1. Verify returned piece metadata
@@ -298,6 +337,9 @@ mod tests {
             |row| row.get(0),
         ).unwrap();
         assert_eq!(phone, "+987654321");
+
+        // 4. Verify vector was added to index
+        assert!(env.index.size() >= 1);
     }
 
     #[test]
@@ -323,6 +365,8 @@ mod tests {
             &text_cat.id,
             &contact,
             None,
+            &mut env.session,
+            &env.index,
         ).unwrap_err();
 
         assert!(matches!(err, ContactError::Piece(PieceError::InvalidCategoryType(_, _, _))));
@@ -360,6 +404,8 @@ mod tests {
             &env.category_id,
             &contact,
             None,
+            &mut env.session,
+            &env.index,
         ).unwrap_err();
 
         assert!(matches!(err, ContactError::Piece(PieceError::Db(_))));
