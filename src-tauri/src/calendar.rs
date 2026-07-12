@@ -1,0 +1,337 @@
+use std::path::Path;
+use rusqlite::Connection;
+use uuid::Uuid;
+use crate::pieces::{Piece, PieceError};
+
+#[derive(Debug, thiserror::Error)]
+pub enum CalendarError {
+    #[error("Piece error: {0}")]
+    Piece(#[from] PieceError),
+    #[error("JSON deserialization error: {0}")]
+    Json(#[from] serde_json::Error),
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone, PartialEq, Eq)]
+pub struct CalendarJson {
+    pub summary: String, // Event Title
+    pub start_date: String, // ISO-8601 string
+    pub end_date: String, // ISO-8601 string
+    pub description: Option<String>,
+    pub location: Option<String>,
+}
+
+/// Formats a CalendarJson payload into standard iCal/ICS v2.0 format.
+pub fn serialize_ical(event: &CalendarJson, piece_id: &str, dtstamp: &str) -> String {
+    let mut ics = String::new();
+    ics.push_str("BEGIN:VCALENDAR\n");
+    ics.push_str("VERSION:2.0\n");
+    ics.push_str("PRODID:-//vibeNote//Calendar Ingest//EN\n");
+    ics.push_str("BEGIN:VEVENT\n");
+    ics.push_str(&format!("UID:{}\n", piece_id));
+
+    let format_date = |d: &str| d.replace("-", "").replace(":", "");
+
+    ics.push_str(&format!("DTSTAMP:{}\n", format_date(dtstamp)));
+    ics.push_str(&format!("DTSTART:{}\n", format_date(&event.start_date)));
+    ics.push_str(&format!("DTEND:{}\n", format_date(&event.end_date)));
+    ics.push_str(&format!("SUMMARY:{}\n", event.summary));
+
+    if let Some(ref desc) = event.description {
+        ics.push_str(&format!("DESCRIPTION:{}\n", desc));
+    }
+    if let Some(ref loc) = event.location {
+        ics.push_str(&format!("LOCATION:{}\n", loc));
+    }
+    ics.push_str("END:VEVENT\n");
+    ics.push_str("END:VCALENDAR\n");
+    ics
+}
+
+/// Ingests a calendar piece: serializes payload to ICS, saves it on disk, and registers it in SQLite.
+pub fn ingest_calendar_piece(
+    conn: &mut Connection,
+    vibe_path: &Path,
+    category_id: &str,
+    event: &CalendarJson,
+    uri: Option<&str>,
+) -> Result<Piece, CalendarError> {
+    // 1. Resolve category info
+    let (folder_path, cat_type): (String, String) = conn.query_row(
+        "SELECT folder_path, type FROM categories WHERE id = ?;",
+        [category_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    ).map_err(|e| match e {
+        rusqlite::Error::QueryReturnedNoRows => PieceError::CategoryNotFound(category_id.to_string()),
+        _ => PieceError::Db(e),
+    })?;
+
+    // 2. Validate category type is 'calendar'
+    if cat_type != "calendar" {
+        return Err(CalendarError::Piece(PieceError::InvalidCategoryType(
+            category_id.to_string(),
+            cat_type,
+            "calendar".to_string(),
+        )));
+    }
+
+    // 3. Verify category directory exists
+    let category_dir = vibe_path.join(&folder_path);
+    if !category_dir.exists() || !category_dir.is_dir() {
+        return Err(CalendarError::Piece(PieceError::CategoryFolderMissing(folder_path)));
+    }
+
+    // 4. Generate Piece ID and output file path (.ics)
+    let piece_id = Uuid::new_v4().to_string();
+    let file_name = format!("{}.ics", piece_id);
+    let piece_file_path = category_dir.join(&file_name);
+
+    // 5. Database updates inside transaction to get timestamp and insert rows
+    let db_result = (|| -> Result<String, rusqlite::Error> {
+        let tx = conn.transaction()?;
+
+        // Retrieve current timestamp
+        let created_at: String = tx.query_row(
+            "SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now');",
+            [],
+            |row| row.get(0),
+        )?;
+
+        // Serialize calendar and write to disk
+        let ics_content = serialize_ical(event, &piece_id, &created_at);
+        std::fs::write(&piece_file_path, &ics_content).map_err(|e| {
+            // Mapping IO error to rusqlite::Error via standard wrapper is hard, but we can do it outside transaction or map it
+            // Let's write the file inside transaction to rollback if it fails, but let's catch it.
+            // Actually, we can write the file outside/before the transaction, but we need the SQLite timestamp first.
+            // That's why we fetch timestamp -> write file -> execute queries -> commit.
+            // If std::fs::write fails, we return an error that aborts the closure.
+            // We use a custom SQL error or other mechanism to abort.
+            // Let's use a dummy query error or just map it.
+            rusqlite::Error::ToSqlConversionFailure(Box::new(e))
+        })?;
+
+        // Insert piece record
+        tx.execute(
+            "INSERT INTO pieces (id, category_id, uri, created_at, is_active) VALUES (?, ?, ?, ?, 1);",
+            rusqlite::params![&piece_id, category_id, uri, &created_at],
+        )?;
+
+        // Extract metadata: Event Title (title), Start Date (start_date), End Date (end_date)
+        tx.execute(
+            "INSERT INTO piece_metadata (piece_id, key, value) VALUES (?, 'title', ?);",
+            [&piece_id, &event.summary],
+        )?;
+
+        tx.execute(
+            "INSERT INTO piece_metadata (piece_id, key, value) VALUES (?, 'start_date', ?);",
+            [&piece_id, &event.start_date],
+        )?;
+
+        tx.execute(
+            "INSERT INTO piece_metadata (piece_id, key, value) VALUES (?, 'end_date', ?);",
+            [&piece_id, &event.end_date],
+        )?;
+
+        if let Some(ref desc) = event.description {
+            tx.execute(
+                "INSERT INTO piece_metadata (piece_id, key, value) VALUES (?, 'description', ?);",
+                [&piece_id, desc],
+            )?;
+        }
+
+        if let Some(ref loc) = event.location {
+            tx.execute(
+                "INSERT INTO piece_metadata (piece_id, key, value) VALUES (?, 'location', ?);",
+                [&piece_id, loc],
+            )?;
+        }
+
+        tx.commit()?;
+        Ok(created_at)
+    })();
+
+    match db_result {
+        Ok(created_at) => Ok(Piece {
+            id: piece_id,
+            category_id: category_id.to_string(),
+            uri: uri.map(String::from),
+            created_at,
+            is_active: true,
+        }),
+        Err(err) => {
+            // Cleanup disk file on DB insert failure
+            let _ = std::fs::remove_file(&piece_file_path);
+            Err(CalendarError::Piece(PieceError::Db(err)))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::init_db;
+    use crate::categories::create_category;
+    use std::fs;
+    use std::path::PathBuf;
+
+    struct TestEnv {
+        vibe_root: PathBuf,
+        conn: Connection,
+        category_id: String,
+    }
+
+    impl TestEnv {
+        fn new(name: &str) -> Self {
+            let temp_dir = std::env::temp_dir();
+            let vibe_root = temp_dir.join(format!("vibenote_test_calendar_{}_{}", name, Uuid::new_v4().simple()));
+            fs::create_dir_all(&vibe_root).unwrap();
+
+            let db_path = vibe_root.join("vibe.db");
+            let conn = init_db(&db_path).unwrap();
+
+            let cat = create_category(&conn, &vibe_root, "My Calendar", "calendar", "calendar").unwrap();
+
+            TestEnv { vibe_root, conn, category_id: cat.id }
+        }
+    }
+
+    impl Drop for TestEnv {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.vibe_root);
+        }
+    }
+
+    #[test]
+    fn test_serialize_ical() {
+        let event = CalendarJson {
+            summary: "Launch Party".to_string(),
+            start_date: "2026-07-12T18:00:00Z".to_string(),
+            end_date: "2026-07-12T22:00:00Z".to_string(),
+            description: Some("Celebrate vibeNote MVP launch".to_string()),
+            location: Some("Tauri HQ".to_string()),
+        };
+
+        let ics = serialize_ical(&event, "event-123", "2026-07-12T17:00:00Z");
+        assert!(ics.starts_with("BEGIN:VCALENDAR\n"));
+        assert!(ics.contains("VERSION:2.0\n"));
+        assert!(ics.contains("UID:event-123\n"));
+        assert!(ics.contains("DTSTAMP:20260712T170000Z\n"));
+        assert!(ics.contains("DTSTART:20260712T180000Z\n"));
+        assert!(ics.contains("DTEND:20260712T220000Z\n"));
+        assert!(ics.contains("SUMMARY:Launch Party\n"));
+        assert!(ics.contains("DESCRIPTION:Celebrate vibeNote MVP launch\n"));
+        assert!(ics.contains("LOCATION:Tauri HQ\n"));
+        assert!(ics.ends_with("END:VCALENDAR\n"));
+    }
+
+    #[test]
+    fn test_ingest_calendar_piece_success() {
+        let mut env = TestEnv::new("success");
+        let event = CalendarJson {
+            summary: "Strategy Meeting".to_string(),
+            start_date: "2026-07-13T09:00:00Z".to_string(),
+            end_date: "2026-07-13T10:00:00Z".to_string(),
+            description: Some("Discuss Epics 4 and 5".to_string()),
+            location: Some("Online".to_string()),
+        };
+
+        let piece = ingest_calendar_piece(
+            &mut env.conn,
+            &env.vibe_root,
+            &env.category_id,
+            &event,
+            Some("file:///doc/cal1.json"),
+        ).unwrap();
+
+        // 1. Verify returned piece metadata
+        assert_eq!(piece.category_id, env.category_id);
+        assert_eq!(piece.uri, Some("file:///doc/cal1.json".to_string()));
+        assert!(piece.is_active);
+
+        // 2. Verify file content on disk (.ics)
+        let expected_file_path = env.vibe_root.join("calendar").join(format!("{}.ics", piece.id));
+        assert!(expected_file_path.is_file());
+        let disk_content = fs::read_to_string(&expected_file_path).unwrap();
+        assert!(disk_content.contains("SUMMARY:Strategy Meeting\n"));
+        assert!(disk_content.contains("DTSTART:20260713T090000Z\n"));
+
+        // 3. Verify SQLite metadata entries
+        let title: String = env.conn.query_row(
+            "SELECT value FROM piece_metadata WHERE piece_id = ? AND key = 'title';",
+            [&piece.id],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(title, "Strategy Meeting");
+
+        let start_date: String = env.conn.query_row(
+            "SELECT value FROM piece_metadata WHERE piece_id = ? AND key = 'start_date';",
+            [&piece.id],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(start_date, "2026-07-13T09:00:00Z");
+
+        let location: String = env.conn.query_row(
+            "SELECT value FROM piece_metadata WHERE piece_id = ? AND key = 'location';",
+            [&piece.id],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(location, "Online");
+    }
+
+    #[test]
+    fn test_ingest_calendar_invalid_category_type() {
+        let mut env = TestEnv::new("invalid_cat");
+
+        // Create a 'contacts' category
+        let contact_cat = create_category(&env.conn, &env.vibe_root, "My Contacts", "contacts", "contacts").unwrap();
+
+        let event = CalendarJson {
+            summary: "Generic Event".to_string(),
+            start_date: "2026-07-12T18:00:00Z".to_string(),
+            end_date: "2026-07-12T19:00:00Z".to_string(),
+            description: None,
+            location: None,
+        };
+
+        let err = ingest_calendar_piece(
+            &mut env.conn,
+            &env.vibe_root,
+            &contact_cat.id,
+            &event,
+            None,
+        ).unwrap_err();
+
+        assert!(matches!(err, CalendarError::Piece(PieceError::InvalidCategoryType(_, _, _))));
+    }
+
+    #[test]
+    fn test_ingest_calendar_rollback_on_db_error() {
+        let mut env = TestEnv::new("rollback");
+
+        // Drop the pieces table to trigger insert error
+        env.conn.execute("DROP TABLE pieces;", []).unwrap();
+
+        let event = CalendarJson {
+            summary: "Rollback Event".to_string(),
+            start_date: "2026-07-12T18:00:00Z".to_string(),
+            end_date: "2026-07-12T19:00:00Z".to_string(),
+            description: None,
+            location: None,
+        };
+
+        let calendar_dir = env.vibe_root.join("calendar");
+        assert_eq!(fs::read_dir(&calendar_dir).unwrap().count(), 0);
+
+        let err = ingest_calendar_piece(
+            &mut env.conn,
+            &env.vibe_root,
+            &env.category_id,
+            &event,
+            None,
+        ).unwrap_err();
+
+        assert!(matches!(err, CalendarError::Piece(PieceError::Db(_))));
+
+        // Confirms that the created ics file was deleted
+        assert_eq!(fs::read_dir(&calendar_dir).unwrap().count(), 0);
+    }
+}
