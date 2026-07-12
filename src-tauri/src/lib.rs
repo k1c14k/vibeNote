@@ -1,5 +1,7 @@
 pub mod db;
 pub mod model;
+pub mod categories;
+
 
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
