@@ -16,6 +16,12 @@ pub enum PieceError {
     InvalidCategoryType(String, String, String),
     #[error("Category folder '{0}' does not exist on disk")]
     CategoryFolderMissing(String),
+    #[error("Text exceeds character limit of {0} (actual: {1})")]
+    CharLimitExceeded(usize, usize),
+    #[error("Text exceeds token limit of {0} (actual: {1})")]
+    TokenLimitExceeded(usize, usize),
+    #[error("Tokenizer error: {0}")]
+    Tokenizer(String),
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone, PartialEq, Eq)]
@@ -43,6 +49,9 @@ pub fn ingest_text_piece(
     uri: Option<&str>,
     metadata: &[(&str, &str)],
 ) -> Result<Piece, PieceError> {
+    // 0. Validate fail-fast character and precise token limits
+    crate::model::validate_limits(content, None, None)?;
+
     // 1. Resolve category from SQLite
     let (folder_path, cat_type): (String, String) = conn.query_row(
         "SELECT folder_path, type FROM categories WHERE id = ?;",
@@ -124,6 +133,9 @@ pub fn replace_piece(
     uri: Option<&str>,
     metadata: &[(&str, &str)],
 ) -> Result<Piece, PieceError> {
+    // 0. Validate fail-fast character and precise token limits
+    crate::model::validate_limits(content, None, None)?;
+
     // 1. Resolve old piece's category info and verify it exists
     let (category_id, folder_path): (String, String) = conn.query_row(
         "SELECT pieces.category_id, categories.folder_path 
@@ -217,6 +229,9 @@ pub fn extend_piece(
     uri: Option<&str>,
     metadata: &[(&str, &str)],
 ) -> Result<Piece, PieceError> {
+    // 0. Validate fail-fast character and precise token limits
+    crate::model::validate_limits(content, None, None)?;
+
     // 1. Resolve parent piece's category info and verify it exists
     let (category_id, folder_path): (String, String) = conn.query_row(
         "SELECT pieces.category_id, categories.folder_path 
@@ -736,5 +751,43 @@ mod tests {
         // get_relations on non-existent piece
         let err_query = get_relations(&env.conn, "non-existent").unwrap_err();
         assert!(matches!(err_query, PieceError::PieceNotFound(_)));
+    }
+
+    #[test]
+    fn test_ingest_limits_validation() {
+        let mut env = TestEnv::new("validation_limits");
+
+        // 1. Fail character limit check
+        let large_content = "a".repeat(2001);
+        let err_char = ingest_text_piece(
+            &mut env.conn,
+            &env.vibe_root,
+            &env.category_id,
+            &large_content,
+            None,
+            &[],
+        ).unwrap_err();
+        assert!(matches!(err_char, PieceError::CharLimitExceeded(2000, 2001)));
+
+        // 2. Fail token limit check
+        let mut token_dense_content = String::new();
+        for i in 0..600 {
+            let c1 = (((i / 26) % 26) + 97) as u8 as char;
+            let c2 = ((i % 26) + 97) as u8 as char;
+            token_dense_content.push(c1);
+            token_dense_content.push(c2);
+            token_dense_content.push(' ');
+        }
+        assert!(token_dense_content.chars().count() < 2000);
+
+        let err_token = ingest_text_piece(
+            &mut env.conn,
+            &env.vibe_root,
+            &env.category_id,
+            &token_dense_content,
+            None,
+            &[],
+        ).unwrap_err();
+        assert!(matches!(err_token, PieceError::TokenLimitExceeded(800, _)));
     }
 }

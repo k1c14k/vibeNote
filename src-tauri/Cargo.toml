@@ -30,3 +30,4 @@ uuid = { version = "1", features = ["v4", "serde"] }
 notify = "6"
 ical = "0.10"
 thiserror = "2"
+tokenizers = { version = "0.21", default-features = false, features = ["onig"] }

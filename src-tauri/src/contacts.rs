@@ -76,6 +76,10 @@ pub fn ingest_contact_piece(
     contact: &ContactJson,
     uri: Option<&str>,
 ) -> Result<Piece, ContactError> {
+    // 0. Validate fail-fast character and precise token limits of the natural language conversion
+    let nl_text = contact_to_text(contact);
+    crate::model::validate_limits(&nl_text, None, None)?;
+
     // 1. Resolve category info
     let (folder_path, cat_type): (String, String) = conn.query_row(
         "SELECT folder_path, type FROM categories WHERE id = ?;",
