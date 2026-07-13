@@ -677,7 +677,7 @@ fn call_get_relations_graph(vibe_path: &Path, conn: &Connection, args: Value) ->
     }))
 }
 
-fn call_list_collections(conn: &Connection) -> Result<Value, String> {
+pub fn call_list_collections(conn: &Connection) -> Result<Value, String> {
     let mut stmt = conn.prepare("SELECT id, name, type, folder_path FROM collections;")
         .map_err(|e| e.to_string())?;
     
