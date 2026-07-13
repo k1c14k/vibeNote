@@ -693,3 +693,201 @@ textarea.form-control {
   }
 }
 
+/* Note Details: Visual Cards & Markdown Stylings */
+.contact-card, .event-card {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 12px;
+  padding: 20px;
+  margin-bottom: 20px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+}
+
+.contact-card-header, .event-card-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  padding-bottom: 16px;
+  margin-bottom: 16px;
+}
+
+.contact-avatar {
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  background: var(--accent-teal-glow);
+  border: 1px solid var(--accent-teal);
+  color: #2dd4bf;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 1.3rem;
+  text-shadow: 0 0 10px rgba(45, 212, 191, 0.3);
+}
+
+.contact-header-info h3, .event-header-info h3 {
+  margin: 0;
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  font-family: var(--font-display);
+}
+
+.contact-title-text {
+  margin: 4px 0 0 0;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+.contact-org-text {
+  margin: 2px 0 0 0;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.contact-card-body, .event-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.contact-info-row, .event-info-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+.contact-info-row .icon {
+  font-size: 1rem;
+  color: var(--accent-teal);
+}
+
+.contact-info-row .value, .event-info-row .value {
+  word-break: break-all;
+}
+
+/* Event Card Specifics */
+.calendar-icon-badge {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 46px;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid rgba(251, 146, 60, 0.3);
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3);
+}
+
+.calendar-icon-badge .month {
+  background: var(--accent-orange);
+  color: #fff;
+  font-size: 0.65rem;
+  font-weight: 800;
+  padding: 3px 0;
+  width: 100%;
+  text-align: center;
+  letter-spacing: 0.5px;
+}
+
+.calendar-icon-badge .day {
+  background: rgba(16, 18, 27, 0.6);
+  color: var(--text-primary);
+  font-size: 1.15rem;
+  font-weight: 800;
+  padding: 4px 0;
+  width: 100%;
+  text-align: center;
+}
+
+.event-time {
+  margin: 4px 0 0 0;
+  font-size: 0.75rem;
+  color: #fb923c;
+  font-weight: 600;
+}
+
+.event-info-row .icon {
+  font-size: 1rem;
+  color: var(--accent-orange);
+}
+
+.event-description {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(255, 255, 255, 0.03);
+  padding: 12px 14px;
+  border-radius: 8px;
+  margin-top: 4px;
+}
+
+.event-description p {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+/* Rich Markdown Render Engine styling */
+.markdown-body {
+  font-size: 0.9rem;
+  line-height: 1.6;
+  color: var(--text-primary);
+}
+
+.markdown-body h1 {
+  font-family: var(--font-display);
+  font-size: 1.35rem;
+  font-weight: 700;
+  margin: 0 0 12px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  padding-bottom: 6px;
+  color: var(--text-primary);
+}
+
+.markdown-body h2 {
+  font-family: var(--font-display);
+  font-size: 1.2rem;
+  font-weight: 700;
+  margin: 16px 0 10px 0;
+  color: var(--text-primary);
+}
+
+.markdown-body h3 {
+  font-family: var(--font-display);
+  font-size: 1.05rem;
+  font-weight: 600;
+  margin: 14px 0 8px 0;
+  color: var(--text-primary);
+}
+
+.markdown-body p {
+  margin: 0 0 10px 0;
+  color: var(--text-secondary);
+}
+
+.markdown-body ul {
+  padding-left: 20px;
+  margin: 0 0 12px 0;
+}
+
+.markdown-body li {
+  margin-bottom: 4px;
+  color: var(--text-secondary);
+}
+
+.markdown-body code {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: monospace;
+  font-size: 0.82rem;
+  color: #c084fc;
+}
+
+
