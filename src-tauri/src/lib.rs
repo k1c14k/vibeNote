@@ -6,6 +6,7 @@ pub mod contacts;
 pub mod calendar;
 pub mod vector_index;
 pub mod mcp;
+pub mod sse;
 
 
 
@@ -660,6 +661,14 @@ pub fn run() {
                     }
                 });
             } else {
+                // Spawn background SSE server
+                let vibe_path_cloned = vibe_path.clone();
+                std::thread::spawn(move || {
+                    if let Err(e) = crate::sse::start_sse_server(&vibe_path_cloned) {
+                        eprintln!("Failed to start SSE server: {}", e);
+                    }
+                });
+
                 // Build main window programmatically in normal mode
                 tauri::WebviewWindowBuilder::new(
                     app,
