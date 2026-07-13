@@ -444,6 +444,40 @@ async fn link_pieces(state: State<'_, AppState>, source_id: String, target_id: S
 }
 
 #[tauri::command]
+async fn search_vibe(
+    state: State<'_, AppState>,
+    query: String,
+    collection_id: Option<String>,
+    limit: Option<usize>,
+) -> Result<Value, String> {
+    let vibe_path = state.vibe_path.lock().unwrap().clone();
+    let conn = Connection::open(vibe_path.join("vibe.db"))
+        .map_err(|e| format!("Failed to open DB: {}", e))?;
+
+    let mut session = crate::model::init_model().map_err(|e| e.to_string())?;
+
+    let options = crate::vector_index::QueryOptions {
+        collection_id,
+        top_k: limit.unwrap_or(10),
+    };
+
+    let vector_results = crate::vector_index::query_pieces(&conn, &vibe_path, &mut session, &query, options)
+        .map_err(|e| format!("Semantic search failed: {}", e))?;
+
+    let mut details = Vec::new();
+    for res in vector_results {
+        if let Ok(info) = crate::mcp::get_piece_info(&vibe_path, &conn, &res.piece_id) {
+            details.push(json!({
+                "piece": info,
+                "similarity": res.similarity
+            }));
+        }
+    }
+
+    Ok(json!(details))
+}
+
+#[tauri::command]
 async fn seed_demo_data(state: State<'_, AppState>) -> Result<(), String> {
     let vibe_path = state.vibe_path.lock().unwrap().clone();
     let mut conn = Connection::open(vibe_path.join("vibe.db"))
@@ -654,7 +688,8 @@ pub fn run() {
             replace_piece,
             tombstone_piece,
             link_pieces,
-            seed_demo_data
+            seed_demo_data,
+            search_vibe
         ])
         .setup(move |app| {
             let vibe_path = resolve_workspace_path();

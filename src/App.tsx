@@ -63,6 +63,16 @@ function App() {
   const [searchQuery, setSearchQuery] = useState<string>("");
   const [showHistory, setShowHistory] = useState<boolean>(true);
   
+  // Left Sidebar Tab Selection
+  const [activeSidebarTab, setActiveSidebarTab] = useState<"workspace" | "search">("workspace");
+
+  // Semantic Search State
+  const [semanticQuery, setSemanticQuery] = useState<string>("");
+  const [selectedSearchCollectionId, setSelectedSearchCollectionId] = useState<string>("");
+  const [searchLimit, setSearchLimit] = useState<number>(10);
+  const [searchResults, setSearchResults] = useState<any[]>([]);
+  const [isSearching, setIsSearching] = useState<boolean>(false);
+  
   // Creation Form State
   const [activeTab, setActiveTab] = useState<"text" | "contacts" | "calendar">("text");
   const [noteContent, setNoteContent] = useState("");
@@ -714,6 +724,106 @@ function App() {
     }
   };
 
+  // Center canvas viewport on a node and highlight it
+  const centerOnNode = (nodeId: string) => {
+    const node = simNodesRef.current.find((n) => n.id === nodeId);
+    if (!node) return;
+    
+    setSelectedNode(node);
+    setIsEditing(false);
+    setEditText("");
+    
+    const canvas = canvasRef.current;
+    if (canvas && typeof node.x === "number" && typeof node.y === "number") {
+      const W = canvas.width;
+      const H = canvas.height;
+      const targetZoom = 1.2;
+      setZoom(targetZoom);
+      setPan({
+        x: W / 2 - node.x * targetZoom,
+        y: H / 2 - node.y * targetZoom,
+      });
+    }
+  };
+
+  // Semantic Vector Search Handler
+  const handleSemanticSearch = async () => {
+    if (!semanticQuery.trim()) {
+      addToast("Please enter a query string", "error");
+      return;
+    }
+
+    if (isWebMode) {
+      setIsSearching(true);
+      setTimeout(() => {
+        const queryWords = semanticQuery.toLowerCase().split(/\s+/).filter(w => w.length > 0);
+        if (queryWords.length === 0) {
+          setSearchResults([]);
+          setIsSearching(false);
+          return;
+        }
+
+        let filtered = graphData.nodes;
+        if (selectedSearchCollectionId) {
+          filtered = filtered.filter(n => n.collection_id === selectedSearchCollectionId);
+        }
+
+        const scored = filtered.map(node => {
+          const title = node.title.toLowerCase();
+          const content = node.content.toLowerCase();
+          
+          let matches = 0;
+          queryWords.forEach(word => {
+            if (title.includes(word)) {
+              matches += 2;
+            }
+            if (content.includes(word)) {
+              matches += 1;
+            }
+          });
+
+          const maxPossible = queryWords.length * 3;
+          const rawScore = matches / maxPossible;
+          const similarity = matches > 0 ? 0.4 + (rawScore * 0.55) : 0.0;
+
+          return {
+            piece: {
+              id: node.id,
+              collection_id: node.collection_id,
+              uri: node.uri,
+              created_at: node.created_at,
+              is_active: node.is_active,
+              content: node.content,
+              metadata: node.metadata
+            },
+            similarity: Math.min(similarity, 0.98)
+          };
+        })
+        .filter(item => item.similarity > 0)
+        .sort((a, b) => b.similarity - a.similarity)
+        .slice(0, searchLimit);
+
+        setSearchResults(scored);
+        setIsSearching(false);
+      }, 400);
+      return;
+    }
+
+    setIsSearching(true);
+    try {
+      const results = await invoke<any[]>("search_vibe", {
+        query: semanticQuery,
+        collectionId: selectedSearchCollectionId || null,
+        limit: searchLimit
+      });
+      setSearchResults(results);
+    } catch (e: any) {
+      addToast(String(e), "error");
+    } finally {
+      setIsSearching(false);
+    }
+  };
+
   // Replace piece (edit operation)
   const handleReplacePiece = async () => {
     if (!selectedNode) return;
@@ -1270,6 +1380,22 @@ function App() {
     return col ? col.type : "text";
   };
 
+  const getPieceTitle = (item: any) => {
+    if (item.metadata && item.metadata.formatted_name) {
+      return item.metadata.formatted_name;
+    }
+    if (item.metadata && item.metadata.summary) {
+      return item.metadata.summary;
+    }
+    const clean = (item.content || "").trim();
+    if (!clean) return `Note (${item.id.substring(0, 8)})`;
+    const firstLine = clean.split("\n")[0].trim().replace(/^#+\s+/, "");
+    if (firstLine.length > 35) {
+      return firstLine.substring(0, 32) + "...";
+    }
+    return firstLine || `Note (${item.id.substring(0, 8)})`;
+  };
+
   const renderMarkdown = (text: string) => {
     if (!text) return null;
     let html = text
@@ -1534,194 +1660,324 @@ function App() {
           )}
         </header>
 
+        <div className="sidebar-tabs">
+          <button 
+            id="tab-btn-workspace"
+            className={`sidebar-tab ${activeSidebarTab === "workspace" ? "active" : ""}`}
+            onClick={() => setActiveSidebarTab("workspace")}
+          >
+            Workspace Tools
+          </button>
+          <button 
+            id="tab-btn-search"
+            className={`sidebar-tab ${activeSidebarTab === "search" ? "active" : ""}`}
+            onClick={() => setActiveSidebarTab("search")}
+          >
+            Semantic Search
+          </button>
+        </div>
+
         <div className="panel-content">
-          {/* Workspace Collections */}
-          <div>
-            <h4 className="panel-section-title">Collections</h4>
-            {collections.length === 0 ? (
-              <p style={{ color: "var(--text-muted)", fontSize: "0.8rem" }}>No collections loaded.</p>
-            ) : (
-              collections.map((col) => (
-                <div key={col.id} className="collection-item">
-                  <span>{col.name}</span>
-                  <span className={`badge-type ${col.type}`}>{col.type}</span>
-                </div>
-              ))
-            )}
-            <button className="btn btn-secondary btn-block" style={{ marginTop: "10px" }} onClick={handleSeedData}>
-              Seed Demo Knowledge Base
-            </button>
-          </div>
-
-          {/* Creation Hub */}
-          <div>
-            <h4 className="panel-section-title">Ingest New Piece hub</h4>
-            
-            <div style={{ display: "flex", gap: "4px", marginBottom: "16px", background: "rgba(0,0,0,0.2)", padding: "4px", borderRadius: "8px" }}>
-              <button 
-                id="tab-note"
-                className={`btn btn-secondary ${activeTab === "text" ? "btn-primary" : ""}`}
-                style={{ flex: 1, padding: "6px 8px", fontSize: "0.75rem" }}
-                onClick={() => setActiveTab("text")}
-              >
-                Note
-              </button>
-              <button 
-                id="tab-contact"
-                className={`btn btn-secondary ${activeTab === "contacts" ? "btn-primary" : ""}`}
-                style={{ flex: 1, padding: "6px 8px", fontSize: "0.75rem" }}
-                onClick={() => setActiveTab("contacts")}
-              >
-                Contact
-              </button>
-              <button 
-                id="tab-event"
-                className={`btn btn-secondary ${activeTab === "calendar" ? "btn-primary" : ""}`}
-                style={{ flex: 1, padding: "6px 8px", fontSize: "0.75rem" }}
-                onClick={() => setActiveTab("calendar")}
-              >
-                Event
-              </button>
-            </div>
-
-            <form onSubmit={handleCreatePiece}>
-              <div className="form-group">
-                <label>Target Collection</label>
-                <select 
-                  id="target-collection"
-                  className="form-control"
-                  value={selectedCollectionId}
-                  onChange={(e) => setSelectedCollectionId(e.target.value)}
-                >
-                  <option value="">-- Choose Collection --</option>
-                  {collections
-                    .filter((c) => c.type === activeTab)
-                    .map((col) => (
-                      <option key={col.id} value={col.id}>{col.name}</option>
-                    ))
-                  }
-                </select>
+          {activeSidebarTab === "workspace" ? (
+            <>
+              {/* Workspace Collections */}
+              <div>
+                <h4 className="panel-section-title">Collections</h4>
+                {collections.length === 0 ? (
+                  <p style={{ color: "var(--text-muted)", fontSize: "0.8rem" }}>No collections loaded.</p>
+                ) : (
+                  collections.map((col) => (
+                    <div key={col.id} className="collection-item">
+                      <span>{col.name}</span>
+                      <span className={`badge-type ${col.type}`}>{col.type}</span>
+                    </div>
+                  ))
+                )}
+                <button className="btn btn-secondary btn-block" style={{ marginTop: "10px" }} onClick={handleSeedData}>
+                  Seed Demo Knowledge Base
+                </button>
               </div>
 
-              {activeTab === "text" && (
+              {/* Creation Hub */}
+              <div>
+                <h4 className="panel-section-title">Ingest New Piece hub</h4>
+                
+                <div style={{ display: "flex", gap: "4px", marginBottom: "16px", background: "rgba(0,0,0,0.2)", padding: "4px", borderRadius: "8px" }}>
+                  <button 
+                    id="tab-note"
+                    className={`btn btn-secondary ${activeTab === "text" ? "btn-primary" : ""}`}
+                    style={{ flex: 1, padding: "6px 8px", fontSize: "0.75rem" }}
+                    onClick={() => setActiveTab("text")}
+                  >
+                    Note
+                  </button>
+                  <button 
+                    id="tab-contact"
+                    className={`btn btn-secondary ${activeTab === "contacts" ? "btn-primary" : ""}`}
+                    style={{ flex: 1, padding: "6px 8px", fontSize: "0.75rem" }}
+                    onClick={() => setActiveTab("contacts")}
+                  >
+                    Contact
+                  </button>
+                  <button 
+                    id="tab-event"
+                    className={`btn btn-secondary ${activeTab === "calendar" ? "btn-primary" : ""}`}
+                    style={{ flex: 1, padding: "6px 8px", fontSize: "0.75rem" }}
+                    onClick={() => setActiveTab("calendar")}
+                  >
+                    Event
+                  </button>
+                </div>
+
+                <form onSubmit={handleCreatePiece}>
+                  <div className="form-group">
+                    <label>Target Collection</label>
+                    <select 
+                      id="target-collection"
+                      className="form-control"
+                      value={selectedCollectionId}
+                      onChange={(e) => setSelectedCollectionId(e.target.value)}
+                    >
+                      <option value="">-- Choose Collection --</option>
+                      {collections
+                        .filter((c) => c.type === activeTab)
+                        .map((col) => (
+                          <option key={col.id} value={col.id}>{col.name}</option>
+                        ))
+                      }
+                    </select>
+                  </div>
+
+                  {activeTab === "text" && (
+                    <div className="form-group">
+                      <label>Note Content (Markdown)</label>
+                      <textarea 
+                        id="note-content"
+                        className="form-control"
+                        placeholder="# Heading&#10;Write note content here..."
+                        value={noteContent}
+                        onChange={(e) => setNoteContent(e.target.value)}
+                      />
+                    </div>
+                  )}
+
+                  {activeTab === "contacts" && (
+                    <>
+                      <div style={{ display: "flex", gap: "8px" }}>
+                        <div className="form-group" style={{ flex: 1 }}>
+                          <label>First Name</label>
+                          <input id="contact-first" className="form-control" value={contactFirst} onChange={(e) => setContactFirst(e.target.value)} placeholder="John" />
+                        </div>
+                        <div className="form-group" style={{ flex: 1 }}>
+                          <label>Last Name</label>
+                          <input id="contact-last" className="form-control" value={contactLast} onChange={(e) => setContactLast(e.target.value)} placeholder="Doe" />
+                        </div>
+                      </div>
+                      <div className="form-group">
+                        <label>Email Address</label>
+                        <input id="contact-email" className="form-control" type="email" value={contactEmail} onChange={(e) => setContactEmail(e.target.value)} placeholder="john@company.com" />
+                      </div>
+                      <div className="form-group">
+                        <label>Phone Number</label>
+                        <input id="contact-phone" className="form-control" value={contactPhone} onChange={(e) => setContactPhone(e.target.value)} placeholder="+1-555-0100" />
+                      </div>
+                      <div className="form-group">
+                        <label>Organization</label>
+                        <input id="contact-org" className="form-control" value={contactOrg} onChange={(e) => setContactOrg(e.target.value)} placeholder="Acme Inc." />
+                      </div>
+                      <div className="form-group">
+                        <label>Job Title</label>
+                        <input id="contact-title" className="form-control" value={contactTitle} onChange={(e) => setContactTitle(e.target.value)} placeholder="Software Director" />
+                      </div>
+                    </>
+                  )}
+
+                  {activeTab === "calendar" && (
+                    <>
+                      <div className="form-group">
+                        <label>Event Summary (Title)</label>
+                        <input id="event-summary" className="form-control" value={eventSummary} onChange={(e) => setEventSummary(e.target.value)} placeholder="Design Review Session" />
+                      </div>
+                      <div className="form-group">
+                        <label>Start Date & Time</label>
+                        <input id="event-start" className="form-control" type="datetime-local" value={eventStart} onChange={(e) => setEventStart(e.target.value)} />
+                      </div>
+                      <div className="form-group">
+                        <label>End Date & Time</label>
+                        <input id="event-end" className="form-control" type="datetime-local" value={eventEnd} onChange={(e) => setEventEnd(e.target.value)} />
+                      </div>
+                      <div className="form-group">
+                        <label>Location</label>
+                        <input id="event-loc" className="form-control" value={eventLoc} onChange={(e) => setEventLoc(e.target.value)} placeholder="Zoom Meeting Room" />
+                      </div>
+                      <div className="form-group">
+                        <label>Description</label>
+                        <textarea id="event-desc" className="form-control" value={eventDesc} onChange={(e) => setEventDesc(e.target.value)} placeholder="Sync meeting to discuss roadmap..." />
+                      </div>
+                    </>
+                  )}
+
+                  <button id="btn-ingest" className="btn btn-primary btn-block" type="submit">
+                    Ingest Piece
+                  </button>
+                </form>
+              </div>
+
+              {/* Relation Builder */}
+              <div>
+                <h4 className="panel-section-title">Link Pieces</h4>
+                <form onSubmit={handleCreateRelation}>
+                  <div className="form-group">
+                    <label>Source Piece ID / Selected</label>
+                    <input 
+                      id="link-source"
+                      className="form-control" 
+                      value={sourceNodeId} 
+                      onChange={(e) => setSourceNodeId(e.target.value)} 
+                      placeholder="Paste UUID or click node" 
+                      style={{ fontSize: "0.75rem" }}
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label>Target Piece ID / Selected</label>
+                    <input 
+                      id="link-target"
+                      className="form-control" 
+                      value={targetNodeId} 
+                      onChange={(e) => setTargetNodeId(e.target.value)} 
+                      placeholder="Paste UUID or click 2nd node"
+                      style={{ fontSize: "0.75rem" }}
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label>Relation Tag</label>
+                    <select id="link-type" className="form-control" value={relationType} onChange={(e) => setRelationType(e.target.value)}>
+                      <option value="refers_to">refers_to</option>
+                      <option value="supports">supports</option>
+                      <option value="contradicts">contradicts</option>
+                      <option value="part_of">part_of</option>
+                      <option value="manages">manages</option>
+                      <option value="implements">implements</option>
+                      <option value="schedules">schedules</option>
+                      <option value="colleague_of">colleague_of</option>
+                    </select>
+                  </div>
+                  <button id="btn-link" className="btn btn-secondary btn-block" type="submit">
+                    Forge Bidirectional Link
+                  </button>
+                </form>
+              </div>
+            </>
+          ) : (
+            // Semantic Search Tab Content
+            <div className="semantic-search-panel" style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
+              <h4 className="panel-section-title">Semantic Vector Search</h4>
+              
+              <form onSubmit={(e) => { e.preventDefault(); handleSemanticSearch(); }} style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
                 <div className="form-group">
-                  <label>Note Content (Markdown)</label>
-                  <textarea 
-                    id="note-content"
+                  <label htmlFor="semantic-search-input">Natural Language Query</label>
+                  <input
+                    id="semantic-search-input"
                     className="form-control"
-                    placeholder="# Heading&#10;Write note content here..."
-                    value={noteContent}
-                    onChange={(e) => setNoteContent(e.target.value)}
+                    placeholder="Search query (e.g. core specs of RAG index)"
+                    value={semanticQuery}
+                    onChange={(e) => setSemanticQuery(e.target.value)}
+                    required
                   />
                 </div>
-              )}
 
-              {activeTab === "contacts" && (
-                <>
-                  <div style={{ display: "flex", gap: "8px" }}>
-                    <div className="form-group" style={{ flex: 1 }}>
-                      <label>First Name</label>
-                      <input id="contact-first" className="form-control" value={contactFirst} onChange={(e) => setContactFirst(e.target.value)} placeholder="John" />
-                    </div>
-                    <div className="form-group" style={{ flex: 1 }}>
-                      <label>Last Name</label>
-                      <input id="contact-last" className="form-control" value={contactLast} onChange={(e) => setContactLast(e.target.value)} placeholder="Doe" />
-                    </div>
-                  </div>
-                  <div className="form-group">
-                    <label>Email Address</label>
-                    <input id="contact-email" className="form-control" type="email" value={contactEmail} onChange={(e) => setContactEmail(e.target.value)} placeholder="john@company.com" />
-                  </div>
-                  <div className="form-group">
-                    <label>Phone Number</label>
-                    <input id="contact-phone" className="form-control" value={contactPhone} onChange={(e) => setContactPhone(e.target.value)} placeholder="+1-555-0100" />
-                  </div>
-                  <div className="form-group">
-                    <label>Organization</label>
-                    <input id="contact-org" className="form-control" value={contactOrg} onChange={(e) => setContactOrg(e.target.value)} placeholder="Acme Inc." />
-                  </div>
-                  <div className="form-group">
-                    <label>Job Title</label>
-                    <input id="contact-title" className="form-control" value={contactTitle} onChange={(e) => setContactTitle(e.target.value)} placeholder="Software Director" />
-                  </div>
-                </>
-              )}
+                <div className="form-group">
+                  <label htmlFor="semantic-search-collection">Filter by Category</label>
+                  <select
+                    id="semantic-search-collection"
+                    className="form-control"
+                    value={selectedSearchCollectionId}
+                    onChange={(e) => setSelectedSearchCollectionId(e.target.value)}
+                  >
+                    <option value="">-- All Collections --</option>
+                    {collections.map((col) => (
+                      <option key={col.id} value={col.id}>
+                        {col.name} ({col.type})
+                      </option>
+                    ))}
+                  </select>
+                </div>
 
-              {activeTab === "calendar" && (
-                <>
-                  <div className="form-group">
-                    <label>Event Summary (Title)</label>
-                    <input id="event-summary" className="form-control" value={eventSummary} onChange={(e) => setEventSummary(e.target.value)} placeholder="Design Review Session" />
+                <div className="form-group">
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "4px" }}>
+                    <label htmlFor="semantic-search-limit">Max Matches: <strong>{searchLimit}</strong></label>
                   </div>
-                  <div className="form-group">
-                    <label>Start Date & Time</label>
-                    <input id="event-start" className="form-control" type="datetime-local" value={eventStart} onChange={(e) => setEventStart(e.target.value)} />
-                  </div>
-                  <div className="form-group">
-                    <label>End Date & Time</label>
-                    <input id="event-end" className="form-control" type="datetime-local" value={eventEnd} onChange={(e) => setEventEnd(e.target.value)} />
-                  </div>
-                  <div className="form-group">
-                    <label>Location</label>
-                    <input id="event-loc" className="form-control" value={eventLoc} onChange={(e) => setEventLoc(e.target.value)} placeholder="Zoom Meeting Room" />
-                  </div>
-                  <div className="form-group">
-                    <label>Description</label>
-                    <textarea id="event-desc" className="form-control" value={eventDesc} onChange={(e) => setEventDesc(e.target.value)} placeholder="Sync meeting to discuss roadmap..." />
-                  </div>
-                </>
-              )}
+                  <input
+                    id="semantic-search-limit"
+                    type="range"
+                    min="1"
+                    max="30"
+                    className="slider-control"
+                    value={searchLimit}
+                    onChange={(e) => setSearchLimit(parseInt(e.target.value))}
+                  />
+                </div>
 
-              <button id="btn-ingest" className="btn btn-primary btn-block" type="submit">
-                Ingest Piece
-              </button>
-            </form>
-          </div>
+                <button id="btn-semantic-search" className="btn btn-primary btn-block" type="submit" disabled={isSearching} style={{ marginTop: "4px" }}>
+                  {isSearching ? "Searching..." : "Execute Semantic Search"}
+                </button>
+              </form>
 
-          {/* Relation Builder */}
-          <div>
-            <h4 className="panel-section-title">Link Pieces</h4>
-            <form onSubmit={handleCreateRelation}>
-              <div className="form-group">
-                <label>Source Piece ID / Selected</label>
-                <input 
-                  id="link-source"
-                  className="form-control" 
-                  value={sourceNodeId} 
-                  onChange={(e) => setSourceNodeId(e.target.value)} 
-                  placeholder="Paste UUID or click node" 
-                  style={{ fontSize: "0.75rem" }}
-                />
+              <div className="search-results-section" style={{ marginTop: "12px" }}>
+                <div className="search-results-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px", borderBottom: "1px solid var(--border-color)", paddingBottom: "6px" }}>
+                  <span className="panel-section-title" style={{ marginBottom: 0 }}>Results ({searchResults.length})</span>
+                  {searchResults.length > 0 && (
+                    <button className="btn-text-only" onClick={() => setSearchResults([])} style={{ background: "none", border: "none", color: "var(--accent-red)", cursor: "pointer", fontSize: "0.75rem" }}>Clear</button>
+                  )}
+                </div>
+
+                {isSearching ? (
+                  <div className="search-loading" style={{ textAlign: "center", padding: "30px 10px", color: "var(--text-secondary)" }}>
+                    <div className="spinner-loader" style={{ width: "24px", height: "24px", border: "3px solid rgba(255,255,255,0.1)", borderTopColor: "var(--accent-purple)", borderRadius: "50%", animation: "spin 1s linear infinite", margin: "0 auto 12px" }}></div>
+                    <p style={{ fontSize: "0.8rem" }}>Embedding query & querying USearch graph...</p>
+                  </div>
+                ) : searchResults.length === 0 ? (
+                  <div className="search-empty-state" style={{ color: "var(--text-muted)", fontSize: "0.8rem", textAlign: "center", padding: "20px 10px" }}>
+                    <p>{semanticQuery ? "No matches found." : "Run a semantic search to find similarity-ranked pieces from your workspace."}</p>
+                  </div>
+                ) : (
+                  <div className="search-results-list" style={{ display: "flex", flexDirection: "column", gap: "12px", maxHeight: "400px", overflowY: "auto", paddingRight: "4px" }}>
+                    {searchResults.map((result) => {
+                      const item = result.piece;
+                      const colType = getColType(item.collection_id);
+                      const colName = getColName(item.collection_id);
+                      const displayTitle = getPieceTitle(item);
+                      
+                      return (
+                        <div 
+                          key={item.id} 
+                          className={`search-result-card ${selectedNode?.id === item.id ? "active" : ""}`}
+                          onClick={() => centerOnNode(item.id)}
+                          style={{
+                            background: selectedNode?.id === item.id ? "rgba(157, 78, 221, 0.08)" : "rgba(255,255,255,0.03)",
+                            border: `1px solid ${selectedNode?.id === item.id ? "var(--accent-purple)" : "var(--border-color)"}`,
+                            borderRadius: "8px",
+                            padding: "12px",
+                            cursor: "pointer",
+                            transition: "all 0.2s ease",
+                          }}
+                        >
+                          <div className="result-card-meta" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
+                            <span className={`badge-type ${colType}`} style={{ fontSize: "0.7rem", padding: "2px 6px", borderRadius: "4px" }}>{colName}</span>
+                            <span className="relevance-score" style={{ fontSize: "0.75rem", fontWeight: "600", color: "var(--accent-teal)" }}>
+                              {(result.similarity * 100).toFixed(1)}% match
+                            </span>
+                          </div>
+                          <div className="result-card-title" style={{ fontSize: "0.85rem", fontWeight: "600", color: "var(--text-primary)", marginBottom: "4px" }}>{displayTitle}</div>
+                          <div className="result-card-snippet" style={{ fontSize: "0.75rem", color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>{item.content}</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
-              <div className="form-group">
-                <label>Target Piece ID / Selected</label>
-                <input 
-                  id="link-target"
-                  className="form-control" 
-                  value={targetNodeId} 
-                  onChange={(e) => setTargetNodeId(e.target.value)} 
-                  placeholder="Paste UUID or click 2nd node"
-                  style={{ fontSize: "0.75rem" }}
-                />
-              </div>
-              <div className="form-group">
-                <label>Relation Tag</label>
-                <select id="link-type" className="form-control" value={relationType} onChange={(e) => setRelationType(e.target.value)}>
-                  <option value="refers_to">refers_to</option>
-                  <option value="supports">supports</option>
-                  <option value="contradicts">contradicts</option>
-                  <option value="part_of">part_of</option>
-                  <option value="manages">manages</option>
-                  <option value="implements">implements</option>
-                  <option value="schedules">schedules</option>
-                  <option value="colleague_of">colleague_of</option>
-                </select>
-              </div>
-              <button id="btn-link" className="btn btn-secondary btn-block" type="submit">
-                Forge Bidirectional Link
-              </button>
-            </form>
-          </div>
+            </div>
+          )}
         </div>
       </aside>
 
