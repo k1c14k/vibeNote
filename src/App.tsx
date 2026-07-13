@@ -97,6 +97,10 @@ function App() {
 
   // Web Mock Mode state (runs when browser doesn't have Tauri internals)
   const [isWebMode, setIsWebMode] = useState(false);
+
+  // Workspace management state
+  const [activeVibePath, setActiveVibePath] = useState<string>("");
+  const [showWorkspaceOverlay, setShowWorkspaceOverlay] = useState<boolean>(false);
   const mockDbRef = useRef<{
     collections: Collection[];
     nodes: GraphNode[];
@@ -249,20 +253,6 @@ function App() {
 
   // Load initial configurations
   const loadWorkspace = async () => {
-    // Check if we have Tauri internals
-    const hasTauri = typeof (window as any) !== "undefined" && (window as any).__TAURI_INTERNALS__ !== undefined;
-    if (!hasTauri) {
-      setIsWebMode(true);
-      setCollections(mockDbRef.current.collections);
-      setSelectedCollectionId(mockDbRef.current.collections[0].id);
-      setGraphData({
-        nodes: [...mockDbRef.current.nodes],
-        edges: [...mockDbRef.current.edges],
-        history_edges: [...mockDbRef.current.history_edges]
-      });
-      return;
-    }
-
     try {
       const cols = await invoke<Collection[]>("get_collections");
       setCollections(cols);
@@ -277,8 +267,66 @@ function App() {
     }
   };
 
+  const handlePickWorkspace = async () => {
+    try {
+      const selected = await invoke<string | null>("pick_vibe_directory");
+      if (selected) {
+        await invoke("change_vibe_directory", { path: selected });
+        setActiveVibePath(selected);
+        setShowWorkspaceOverlay(false);
+        addToast("Vibe directory selected successfully!");
+        await loadWorkspace();
+      }
+    } catch (e: any) {
+      addToast(String(e), "error");
+    }
+  };
+
+  const handleUseDefaultWorkspace = async () => {
+    try {
+      const defaultPath = await invoke<string>("get_active_vibe_path");
+      await invoke("change_vibe_directory", { path: defaultPath });
+      setActiveVibePath(defaultPath);
+      setShowWorkspaceOverlay(false);
+      addToast("Default Vibe directory initialized!");
+      await loadWorkspace();
+    } catch (e: any) {
+      addToast(String(e), "error");
+    }
+  };
+
+  const initializeApp = async () => {
+    const hasTauri = typeof (window as any) !== "undefined" && (window as any).__TAURI_INTERNALS__ !== undefined;
+    if (!hasTauri) {
+      setIsWebMode(true);
+      setActiveVibePath("Web Demo Vibe");
+      setCollections(mockDbRef.current.collections);
+      setSelectedCollectionId(mockDbRef.current.collections[0].id);
+      setGraphData({
+        nodes: [...mockDbRef.current.nodes],
+        edges: [...mockDbRef.current.edges],
+        history_edges: [...mockDbRef.current.history_edges]
+      });
+      return;
+    }
+
+    try {
+      const configured = await invoke<boolean>("is_workspace_configured");
+      const path = await invoke<string>("get_active_vibe_path");
+      setActiveVibePath(path);
+      
+      if (configured) {
+        await loadWorkspace();
+      } else {
+        setShowWorkspaceOverlay(true);
+      }
+    } catch (e: any) {
+      addToast(String(e), "error");
+    }
+  };
+
   useEffect(() => {
-    loadWorkspace();
+    initializeApp();
   }, []);
 
   // Update simulation nodes when database changes
@@ -1156,6 +1204,41 @@ function App() {
         ))}
       </div>
 
+      {/* Workspace Manager Overlay */}
+      {showWorkspaceOverlay && (
+        <div className="workspace-overlay">
+          <div className="glass-panel workspace-modal animate-scale-up">
+            <header className="workspace-header">
+              <h1>vibeNote</h1>
+              <p className="subtitle">Select or Create a Vibe</p>
+            </header>
+            <div className="workspace-body">
+              <p className="description">
+                vibeNote organizes your thoughts, contacts, and calendar events semantically inside a local directory called a <strong>Vibe</strong>.
+              </p>
+              
+              <div className="path-display-box">
+                <span className="label">Active Path:</span>
+                <code className="path-text">{activeVibePath || "None (First Launch)"}</code>
+              </div>
+
+              <div className="actions-group">
+                <button className="btn btn-primary btn-block" onClick={handlePickWorkspace}>
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ marginRight: "8px", verticalAlign: "middle" }}>
+                    <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+                  </svg>
+                  Select / Create Local Vibe Directory
+                </button>
+                
+                <button className="btn btn-secondary btn-block" style={{ marginTop: "12px" }} onClick={handleUseDefaultWorkspace}>
+                  Use Default Workspace (~/.vibenote)
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* LEFT SIDEBAR: Forms and collection list */}
       <aside className="glass-panel left-sidebar">
         <header className="panel-header">
@@ -1166,6 +1249,21 @@ function App() {
             vibeNote
           </h2>
           <p>Local PKM Semantic Engine {isWebMode && " (Web Demo)"}</p>
+
+          {activeVibePath && (
+            <div className="workspace-info-box">
+              <span className="workspace-label" title={activeVibePath}>
+                Vibe: <code>{activeVibePath.length > 25 ? "..." + activeVibePath.substring(activeVibePath.length - 22) : activeVibePath}</code>
+              </span>
+              {!isWebMode && (
+                <button className="btn-icon" title="Switch Vibe" onClick={() => setShowWorkspaceOverlay(true)} style={{ background: "none", border: "none", color: "var(--primary-glow)", cursor: "pointer", display: "inline-flex", alignItems: "center", marginLeft: "6px" }}>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                    <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/>
+                  </svg>
+                </button>
+              )}
+            </div>
+          )}
         </header>
 
         <div className="panel-content">

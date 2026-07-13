@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::sync::mpsc::Sender;
-use std::path::Path;
 use std::io::Write;
 
 static SESSIONS: OnceLock<Mutex<HashMap<String, Sender<Vec<u8>>>>> = OnceLock::new();
@@ -11,7 +10,7 @@ fn get_sessions() -> &'static Mutex<HashMap<String, Sender<Vec<u8>>>> {
 }
 
 /// Spawns a local Server-Sent Events HTTP server inside the Tauri backend.
-pub fn start_sse_server(vibe_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+pub fn start_sse_server(vibe_path: std::sync::Arc<std::sync::Mutex<std::path::PathBuf>>) -> Result<(), Box<dyn std::error::Error>> {
     let port = std::env::var("VIBENOTE_SSE_PORT")
         .or_else(|_| std::env::var("PORT"))
         .unwrap_or_else(|_| "3001".to_string());
@@ -25,11 +24,11 @@ pub fn start_sse_server(vibe_path: &Path) -> Result<(), Box<dyn std::error::Erro
     let model_session = Arc::new(Mutex::new(crate::model::init_model()?));
 
     for request in server.incoming_requests() {
-        let vibe_path_cloned = vibe_path.to_path_buf();
+        let vibe_path_cloned = vibe_path.clone();
         let session_cloned = model_session.clone();
         
         std::thread::spawn(move || {
-            if let Err(e) = handle_request(request, &vibe_path_cloned, session_cloned) {
+            if let Err(e) = handle_request(request, vibe_path_cloned, session_cloned) {
                 eprintln!("Error handling HTTP request: {}", e);
             }
         });
@@ -40,7 +39,7 @@ pub fn start_sse_server(vibe_path: &Path) -> Result<(), Box<dyn std::error::Erro
 
 fn handle_request(
     mut request: tiny_http::Request,
-    vibe_path: &Path,
+    vibe_path: std::sync::Arc<std::sync::Mutex<std::path::PathBuf>>,
     model_session: Arc<Mutex<ort::session::Session>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // 1. Handle CORS preflight OPTIONS request
@@ -160,13 +159,14 @@ fn handle_request(
             let mut body = String::new();
             request.as_reader().read_to_string(&mut body)?;
 
-            let db_path = vibe_path.join("vibe.db");
+            let active_path = vibe_path.lock().unwrap().clone();
+            let db_path = active_path.join("vibe.db");
             let mut conn = crate::db::init_db(&db_path)?;
 
             // Route through core handle_mcp_message logic
             let response = {
                 let mut session_guard = model_session.lock().unwrap();
-                crate::mcp::handle_mcp_message(vibe_path, &mut conn, &mut *session_guard, &body)
+                crate::mcp::handle_mcp_message(&active_path, &mut conn, &mut *session_guard, &body)
             };
 
             // Format as standard MCP SSE event and send to connection thread channel

@@ -33,3 +33,4 @@ ical = "0.10"
 thiserror = "2"
 tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
 tiny_http = "0.12"
+rfd = "0.15"

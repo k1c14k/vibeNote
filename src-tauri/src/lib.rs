@@ -8,23 +8,52 @@ pub mod vector_index;
 pub mod mcp;
 pub mod sse;
 
-
-
-
-
-
 use tauri::{
     menu::{MenuBuilder, MenuItemBuilder},
     tray::TrayIconBuilder,
     Manager, State,
 };
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use rusqlite::Connection;
 
 pub struct AppState {
-    pub vibe_path: PathBuf,
+    pub vibe_path: std::sync::Arc<std::sync::Mutex<PathBuf>>,
+}
+
+fn get_config_file_path() -> PathBuf {
+    if let Ok(home) = std::env::var("HOME") {
+        return PathBuf::from(home).join(".vibenote_config.json");
+    }
+    PathBuf::from(".vibenote_config.json")
+}
+
+fn load_config_path() -> Option<PathBuf> {
+    let config_path = get_config_file_path();
+    if config_path.exists() {
+        if let Ok(content) = std::fs::read_to_string(config_path) {
+            if let Ok(val) = serde_json::from_str::<Value>(&content) {
+                if let Some(path_str) = val.get("active_vibe_path").and_then(|v| v.as_str()) {
+                    let path = PathBuf::from(path_str);
+                    if path.exists() {
+                        return Some(path);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn save_config_path(path: &Path) -> Result<(), String> {
+    let config_path = get_config_file_path();
+    let data = json!({
+        "active_vibe_path": path.to_string_lossy().to_string()
+    });
+    let content = serde_json::to_string_pretty(&data).map_err(|e| e.to_string())?;
+    std::fs::write(config_path, content).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
@@ -34,15 +63,57 @@ fn greet(name: &str) -> String {
 }
 
 #[tauri::command]
+fn get_active_vibe_path(state: State<'_, AppState>) -> Result<String, String> {
+    let path = state.vibe_path.lock().unwrap();
+    Ok(path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+async fn is_workspace_configured() -> Result<bool, String> {
+    Ok(get_config_file_path().exists())
+}
+
+#[tauri::command]
+async fn pick_vibe_directory() -> Result<Option<String>, String> {
+    let result = rfd::FileDialog::new()
+        .set_title("Select or Create vibeNote Workspace (Vibe)")
+        .pick_folder();
+    Ok(result.map(|p| p.to_string_lossy().to_string()))
+}
+
+#[tauri::command]
+async fn change_vibe_directory(state: State<'_, AppState>, path: String) -> Result<(), String> {
+    let new_path = PathBuf::from(path);
+    let db_path = new_path.join("vibe.db");
+    let conn = crate::db::init_db(&db_path)
+        .map_err(|e| format!("Failed to initialize database: {}", e))?;
+    
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM collections;", [], |row| row.get(0)).unwrap_or(0);
+    if count == 0 {
+        let _ = crate::collections::create_collection(&conn, &new_path, "Notes", "text", "notes");
+    }
+
+    *state.vibe_path.lock().unwrap() = new_path.clone();
+
+    if let Err(e) = save_config_path(&new_path) {
+        eprintln!("Failed to save config path: {}", e);
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
 async fn get_collections(state: State<'_, AppState>) -> Result<Value, String> {
-    let conn = Connection::open(state.vibe_path.join("vibe.db"))
+    let vibe_path = state.vibe_path.lock().unwrap().clone();
+    let conn = Connection::open(vibe_path.join("vibe.db"))
         .map_err(|e| format!("Failed to open DB: {}", e))?;
     crate::mcp::call_list_collections(&conn)
 }
 
 #[tauri::command]
 async fn get_graph_data(state: State<'_, AppState>) -> Result<Value, String> {
-    let conn = Connection::open(state.vibe_path.join("vibe.db"))
+    let vibe_path = state.vibe_path.lock().unwrap().clone();
+    let conn = Connection::open(vibe_path.join("vibe.db"))
         .map_err(|e| format!("Failed to open DB: {}", e))?;
 
     // Query all pieces (active & inactive)
@@ -63,7 +134,7 @@ async fn get_graph_data(state: State<'_, AppState>) -> Result<Value, String> {
     for row in rows {
         if let Ok((id, collection_id, uri, created_at, is_active)) = row {
             // Get piece title/label and content using get_piece_info
-            let info = crate::mcp::get_piece_info(&state.vibe_path, &conn, &id)
+            let info = crate::mcp::get_piece_info(&vibe_path, &conn, &id)
                 .unwrap_or_else(|_| crate::mcp::PieceDetail {
                     id: id.clone(),
                     collection_id: collection_id.clone(),
@@ -161,7 +232,8 @@ async fn create_piece(
     content: String,
     piece_type: String,
 ) -> Result<Value, String> {
-    let mut conn = Connection::open(state.vibe_path.join("vibe.db"))
+    let vibe_path = state.vibe_path.lock().unwrap().clone();
+    let mut conn = Connection::open(vibe_path.join("vibe.db"))
         .map_err(|e| format!("Failed to open DB: {}", e))?;
 
     let mut session = crate::model::init_model().map_err(|e| e.to_string())?;
@@ -172,13 +244,13 @@ async fn create_piece(
         |row| row.get(0),
     ).map_err(|e| format!("Collection not found: {}", e))?;
 
-    let index = crate::vector_index::load_or_create_index(&state.vibe_path, &folder_path)
+    let index = crate::vector_index::load_or_create_index(&vibe_path, &folder_path)
         .map_err(|e| e.to_string())?;
 
     if piece_type == "text" {
         let piece = crate::pieces::ingest_text_piece(
             &mut conn,
-            &state.vibe_path,
+            &vibe_path,
             &collection_id,
             &content,
             None,
@@ -192,7 +264,7 @@ async fn create_piece(
             .map_err(|e| format!("Invalid contact JSON: {}", e))?;
         let piece = crate::contacts::ingest_contact_piece(
             &mut conn,
-            &state.vibe_path,
+            &vibe_path,
             &collection_id,
             &contact,
             None,
@@ -206,7 +278,7 @@ async fn create_piece(
             .map_err(|e| format!("Invalid calendar JSON: {}", e))?;
         let piece = crate::calendar::ingest_calendar_piece(
             &mut conn,
-            &state.vibe_path,
+            &vibe_path,
             &collection_id,
             &event,
             None,
@@ -226,7 +298,8 @@ async fn replace_piece(
     old_piece_id: String,
     content: String,
 ) -> Result<Value, String> {
-    let mut conn = Connection::open(state.vibe_path.join("vibe.db"))
+    let vibe_path = state.vibe_path.lock().unwrap().clone();
+    let mut conn = Connection::open(vibe_path.join("vibe.db"))
         .map_err(|e| format!("Failed to open DB: {}", e))?;
 
     let mut session = crate::model::init_model().map_err(|e| e.to_string())?;
@@ -240,13 +313,13 @@ async fn replace_piece(
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
     ).map_err(|e| format!("Old piece not found: {}", e))?;
 
-    let index = crate::vector_index::load_or_create_index(&state.vibe_path, &folder_path)
+    let index = crate::vector_index::load_or_create_index(&vibe_path, &folder_path)
         .map_err(|e| e.to_string())?;
 
     if col_type == "text" {
         let piece = crate::pieces::replace_piece(
             &mut conn,
-            &state.vibe_path,
+            &vibe_path,
             &old_piece_id,
             &content,
             None,
@@ -286,7 +359,7 @@ async fn replace_piece(
 
         let piece = crate::pieces::replace_piece(
             &mut conn,
-            &state.vibe_path,
+            &vibe_path,
             &old_piece_id,
             &vcard,
             None,
@@ -324,7 +397,7 @@ async fn replace_piece(
 
         let piece = crate::pieces::replace_piece(
             &mut conn,
-            &state.vibe_path,
+            &vibe_path,
             &old_piece_id,
             &ics,
             None,
@@ -340,7 +413,8 @@ async fn replace_piece(
 
 #[tauri::command]
 async fn tombstone_piece(state: State<'_, AppState>, piece_id: String) -> Result<(), String> {
-    let mut conn = Connection::open(state.vibe_path.join("vibe.db"))
+    let vibe_path = state.vibe_path.lock().unwrap().clone();
+    let mut conn = Connection::open(vibe_path.join("vibe.db"))
         .map_err(|e| format!("Failed to open DB: {}", e))?;
 
     let folder_path: String = conn.query_row(
@@ -348,20 +422,21 @@ async fn tombstone_piece(state: State<'_, AppState>, piece_id: String) -> Result
          FROM pieces 
          JOIN collections ON pieces.collection_id = collections.id 
          WHERE pieces.id = ?;",
-        [&piece_id],
+         [&piece_id],
         |row| row.get(0),
     ).map_err(|e| format!("Piece or collection not found: {}", e))?;
 
-    let index = crate::vector_index::load_or_create_index(&state.vibe_path, &folder_path)
+    let index = crate::vector_index::load_or_create_index(&vibe_path, &folder_path)
         .map_err(|e| e.to_string())?;
 
-    crate::pieces::tombstone_piece(&mut conn, &state.vibe_path, &piece_id, &index)
+    crate::pieces::tombstone_piece(&mut conn, &vibe_path, &piece_id, &index)
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn link_pieces(state: State<'_, AppState>, source_id: String, target_id: String, relation_type: String) -> Result<(), String> {
-    let conn = Connection::open(state.vibe_path.join("vibe.db"))
+    let vibe_path = state.vibe_path.lock().unwrap().clone();
+    let conn = Connection::open(vibe_path.join("vibe.db"))
         .map_err(|e| format!("Failed to open DB: {}", e))?;
 
     crate::pieces::link_pieces(&conn, &source_id, &target_id, &relation_type)
@@ -370,7 +445,8 @@ async fn link_pieces(state: State<'_, AppState>, source_id: String, target_id: S
 
 #[tauri::command]
 async fn seed_demo_data(state: State<'_, AppState>) -> Result<(), String> {
-    let mut conn = Connection::open(state.vibe_path.join("vibe.db"))
+    let vibe_path = state.vibe_path.lock().unwrap().clone();
+    let mut conn = Connection::open(vibe_path.join("vibe.db"))
         .map_err(|e| format!("Failed to open DB: {}", e))?;
 
     let mut session = crate::model::init_model().map_err(|e| e.to_string())?;
@@ -381,7 +457,7 @@ async fn seed_demo_data(state: State<'_, AppState>) -> Result<(), String> {
         [],
         |row| row.get(0),
     ).unwrap_or_else(|_| {
-        let col = crate::collections::create_collection(&conn, &state.vibe_path, "Notes", "text", "notes").unwrap();
+        let col = crate::collections::create_collection(&conn, &vibe_path, "Notes", "text", "notes").unwrap();
         col.id
     });
 
@@ -390,7 +466,7 @@ async fn seed_demo_data(state: State<'_, AppState>) -> Result<(), String> {
         [],
         |row| row.get(0),
     ).unwrap_or_else(|_| {
-        let col = crate::collections::create_collection(&conn, &state.vibe_path, "Contacts", "contacts", "contacts").unwrap();
+        let col = crate::collections::create_collection(&conn, &vibe_path, "Contacts", "contacts", "contacts").unwrap();
         col.id
     });
 
@@ -399,19 +475,19 @@ async fn seed_demo_data(state: State<'_, AppState>) -> Result<(), String> {
         [],
         |row| row.get(0),
     ).unwrap_or_else(|_| {
-        let col = crate::collections::create_collection(&conn, &state.vibe_path, "Calendar", "calendar", "calendar").unwrap();
+        let col = crate::collections::create_collection(&conn, &vibe_path, "Calendar", "calendar", "calendar").unwrap();
         col.id
     });
 
     // Ingest text pieces
-    let index_notes = crate::vector_index::load_or_create_index(&state.vibe_path, "notes")
+    let index_notes = crate::vector_index::load_or_create_index(&vibe_path, "notes")
         .map_err(|e| e.to_string())?;
 
     let p1 = crate::pieces::ingest_text_piece(
         &mut conn,
-        &state.vibe_path,
+        &vibe_path,
         &notes_col_id,
-        "# Project Alpha Core Vision\nProject Alpha aims to build a fully local-first, privacy-respecting semantic desktop database. It stores items as atomic, immutable Pieces and structures them dynamically with an association graph.",
+        "# Project Alpha Core Vision\nProject Alpha aims to build a fully local-first, privacy-respecting desktop database. It stores items as atomic, immutable Pieces and structures them dynamically with an association graph.",
         None,
         &[],
         &mut session,
@@ -420,7 +496,7 @@ async fn seed_demo_data(state: State<'_, AppState>) -> Result<(), String> {
 
     let p2 = crate::pieces::ingest_text_piece(
         &mut conn,
-        &state.vibe_path,
+        &vibe_path,
         &notes_col_id,
         "# Architecture: USearch Vector Index\nWe use the USearch library (HNSW graph) to perform high-speed similarity searches locally on standard consumer computers, mapping embeddings using SSD-backed files.",
         None,
@@ -431,7 +507,7 @@ async fn seed_demo_data(state: State<'_, AppState>) -> Result<(), String> {
 
     let p3 = crate::pieces::ingest_text_piece(
         &mut conn,
-        &state.vibe_path,
+        &vibe_path,
         &notes_col_id,
         "# Performance Bottleneck: High Capacity HNSW Rebuilding\nWhen the memory-mapped vector index reaches 100k vectors, memory constraints start causing significant page faults on lower-end devices. We need to implement vector quantization.",
         None,
@@ -441,7 +517,7 @@ async fn seed_demo_data(state: State<'_, AppState>) -> Result<(), String> {
     ).map_err(|e| e.to_string())?;
 
     // Ingest contacts
-    let index_contacts = crate::vector_index::load_or_create_index(&state.vibe_path, "contacts")
+    let index_contacts = crate::vector_index::load_or_create_index(&vibe_path, "contacts")
         .map_err(|e| e.to_string())?;
 
     let contact_alice = crate::contacts::ContactJson {
@@ -456,7 +532,7 @@ async fn seed_demo_data(state: State<'_, AppState>) -> Result<(), String> {
 
     let p_alice = crate::contacts::ingest_contact_piece(
         &mut conn,
-        &state.vibe_path,
+        &vibe_path,
         &contacts_col_id,
         &contact_alice,
         None,
@@ -477,7 +553,7 @@ async fn seed_demo_data(state: State<'_, AppState>) -> Result<(), String> {
 
     let p_bob = crate::contacts::ingest_contact_piece(
         &mut conn,
-        &state.vibe_path,
+        &vibe_path,
         &contacts_col_id,
         &contact_bob,
         None,
@@ -487,7 +563,7 @@ async fn seed_demo_data(state: State<'_, AppState>) -> Result<(), String> {
     ).map_err(|e| e.to_string())?;
 
     // Ingest calendar events
-    let index_calendar = crate::vector_index::load_or_create_index(&state.vibe_path, "calendar")
+    let index_calendar = crate::vector_index::load_or_create_index(&vibe_path, "calendar")
         .map_err(|e| e.to_string())?;
 
     let event_launch = crate::calendar::CalendarJson {
@@ -500,7 +576,7 @@ async fn seed_demo_data(state: State<'_, AppState>) -> Result<(), String> {
 
     let p_event = crate::calendar::ingest_calendar_piece(
         &mut conn,
-        &state.vibe_path,
+        &vibe_path,
         &calendar_col_id,
         &event_launch,
         None,
@@ -520,7 +596,7 @@ async fn seed_demo_data(state: State<'_, AppState>) -> Result<(), String> {
     // Replace p3 with quantization fix to demonstrate replacement history path
     let p3_replaced = crate::pieces::replace_piece(
         &mut conn,
-        &state.vibe_path,
+        &vibe_path,
         &p3.id,
         "# Performance Bottleneck: Quantization Fix Applied\nWe implemented int8 vector quantization, which successfully resolved page faulting and reduced index RAM usage from 2.5GB to 550MB on target devices.",
         None,
@@ -548,6 +624,9 @@ fn resolve_workspace_path() -> PathBuf {
     if let Ok(path_str) = std::env::var("VIBENOTE_WORKSPACE") {
         return PathBuf::from(path_str);
     }
+    if let Some(config_path) = load_config_path() {
+        return config_path;
+    }
     if let Ok(home) = std::env::var("HOME") {
         let p = PathBuf::from(home).join(".vibenote");
         if p.exists() {
@@ -565,6 +644,10 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             greet,
+            get_active_vibe_path,
+            is_workspace_configured,
+            pick_vibe_directory,
+            change_vibe_directory,
             get_collections,
             get_graph_data,
             create_piece,
@@ -599,28 +682,29 @@ pub fn run() {
                 })
                 .build(app)?;
 
-            // Initialize DB in both GUI and MCP modes
-            let db_path = vibe_path.join("vibe.db");
-            let conn = match crate::db::init_db(&db_path) {
-                Ok(c) => c,
-                Err(e) => {
-                    eprintln!("Failed to initialize database: {}", e);
-                    return Err(e.into());
-                }
-            };
-
-            // Auto-create default collection if empty
-            let count: i64 = conn.query_row("SELECT COUNT(*) FROM collections;", [], |row| row.get(0)).unwrap_or(0);
-            if count == 0 {
-                let _ = crate::collections::create_collection(&conn, &vibe_path, "Notes", "text", "notes");
-            }
-
-            // Register app state for Tauri commands
-            app.manage(AppState {
-                vibe_path: vibe_path.clone(),
-            });
-
             if is_mcp {
+                // Initialize DB in MCP mode
+                let db_path = vibe_path.join("vibe.db");
+                let conn = match crate::db::init_db(&db_path) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        eprintln!("Failed to initialize database: {}", e);
+                        return Err(e.into());
+                    }
+                };
+
+                // Auto-create default collection if empty
+                let count: i64 = conn.query_row("SELECT COUNT(*) FROM collections;", [], |row| row.get(0)).unwrap_or(0);
+                if count == 0 {
+                    let _ = crate::collections::create_collection(&conn, &vibe_path, "Notes", "text", "notes");
+                }
+
+                // Register app state for Tauri commands using Arc<Mutex>
+                let shared_path = std::sync::Arc::new(std::sync::Mutex::new(vibe_path.clone()));
+                app.manage(AppState {
+                    vibe_path: shared_path.clone(),
+                });
+
                 // Spawn stdio loop background thread
                 let vibe_path_cloned = vibe_path.clone();
                 std::thread::spawn(move || {
@@ -661,10 +745,35 @@ pub fn run() {
                     }
                 });
             } else {
-                // Spawn background SSE server
-                let vibe_path_cloned = vibe_path.clone();
+                // GUI Mode: Only initialize DB if workspace configuration exists
+                let config_exists = get_config_file_path().exists();
+                if config_exists {
+                    let db_path = vibe_path.join("vibe.db");
+                    let conn = match crate::db::init_db(&db_path) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            eprintln!("Failed to initialize database: {}", e);
+                            return Err(e.into());
+                        }
+                    };
+
+                    // Auto-create default collection if empty
+                    let count: i64 = conn.query_row("SELECT COUNT(*) FROM collections;", [], |row| row.get(0)).unwrap_or(0);
+                    if count == 0 {
+                        let _ = crate::collections::create_collection(&conn, &vibe_path, "Notes", "text", "notes");
+                    }
+                }
+
+                // Register app state for Tauri commands using Arc<Mutex>
+                let shared_path = std::sync::Arc::new(std::sync::Mutex::new(vibe_path.clone()));
+                app.manage(AppState {
+                    vibe_path: shared_path.clone(),
+                });
+
+                // Spawn background SSE server passing Arc<Mutex> path
+                let vibe_path_cloned = shared_path.clone();
                 std::thread::spawn(move || {
-                    if let Err(e) = crate::sse::start_sse_server(&vibe_path_cloned) {
+                    if let Err(e) = crate::sse::start_sse_server(vibe_path_cloned) {
                         eprintln!("Failed to start SSE server: {}", e);
                     }
                 });
