@@ -18,10 +18,7 @@ pub fn start_sse_server(
         .unwrap_or_else(|_| "3001".to_string());
 
     let addr = format!("127.0.0.1:{}", port);
-    let server = Arc::new(
-        tiny_http::Server::http(&addr)
-            .map_err(std::io::Error::other)?,
-    );
+    let server = Arc::new(tiny_http::Server::http(&addr).map_err(std::io::Error::other)?);
     println!("SSE server listening on http://{}", addr);
 
     let model_session = Arc::new(Mutex::new(crate::model::init_model()?));
