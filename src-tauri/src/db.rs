@@ -1,5 +1,5 @@
-use std::path::Path;
 use rusqlite::{Connection, Result};
+use std::path::Path;
 
 const MIGRATIONS: &[&str] = &[
     // Version 1: Base schemas
@@ -75,7 +75,7 @@ const MIGRATIONS: &[&str] = &[
     DROP INDEX IF EXISTS idx_pieces_category_id;
     CREATE INDEX idx_pieces_collection_id ON pieces(collection_id);
     PRAGMA foreign_keys = ON;
-    "#
+    "#,
 ];
 
 /// Initializes the SQLite connection and runs migration scripts.
@@ -195,9 +195,11 @@ mod tests {
             .unwrap();
 
         let piece_count: i32 = conn
-            .query_row("SELECT COUNT(*) FROM pieces WHERE id = ?;", ["piece-1"], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT COUNT(*) FROM pieces WHERE id = ?;",
+                ["piece-1"],
+                |row| row.get(0),
+            )
             .unwrap();
         assert_eq!(piece_count, 0);
 

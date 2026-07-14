@@ -1,22 +1,22 @@
-pub mod db;
-pub mod model;
-pub mod collections;
-pub mod pieces;
-pub mod contacts;
 pub mod calendar;
-pub mod vector_index;
+pub mod collections;
+pub mod contacts;
+pub mod db;
 pub mod mcp;
+pub mod model;
+pub mod pieces;
 pub mod sse;
+pub mod vector_index;
 
+use rusqlite::Connection;
+use serde_json::{json, Value};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use tauri::{
     menu::{MenuBuilder, MenuItemBuilder},
     tray::TrayIconBuilder,
     Manager, State,
 };
-use std::path::{Path, PathBuf};
-use serde_json::{json, Value};
-use std::collections::HashMap;
-use rusqlite::Connection;
 
 pub struct AppState {
     pub vibe_path: std::sync::Arc<std::sync::Mutex<PathBuf>>,
@@ -87,8 +87,10 @@ async fn change_vibe_directory(state: State<'_, AppState>, path: String) -> Resu
     let db_path = new_path.join("vibe.db");
     let conn = crate::db::init_db(&db_path)
         .map_err(|e| format!("Failed to initialize database: {}", e))?;
-    
-    let count: i64 = conn.query_row("SELECT COUNT(*) FROM collections;", [], |row| row.get(0)).unwrap_or(0);
+
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM collections;", [], |row| row.get(0))
+        .unwrap_or(0);
     if count == 0 {
         let _ = crate::collections::create_collection(&conn, &new_path, "Notes", "text", "notes");
     }
@@ -117,25 +119,28 @@ async fn get_graph_data(state: State<'_, AppState>) -> Result<Value, String> {
         .map_err(|e| format!("Failed to open DB: {}", e))?;
 
     // Query all pieces (active & inactive)
-    let mut stmt = conn.prepare("SELECT id, collection_id, uri, created_at, is_active FROM pieces;")
+    let mut stmt = conn
+        .prepare("SELECT id, collection_id, uri, created_at, is_active FROM pieces;")
         .map_err(|e| e.to_string())?;
-    
-    let rows = stmt.query_map([], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, Option<String>>(2)?,
-            row.get::<_, String>(3)?,
-            row.get::<_, i32>(4)? == 1,
-        ))
-    }).map_err(|e| e.to_string())?;
+
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i32>(4)? == 1,
+            ))
+        })
+        .map_err(|e| e.to_string())?;
 
     let mut nodes = Vec::new();
     for row in rows {
         if let Ok((id, collection_id, uri, created_at, is_active)) = row {
             // Get piece title/label and content using get_piece_info
-            let info = crate::mcp::get_piece_info(&vibe_path, &conn, &id)
-                .unwrap_or_else(|_| crate::mcp::PieceDetail {
+            let info = crate::mcp::get_piece_info(&vibe_path, &conn, &id).unwrap_or_else(|_| {
+                crate::mcp::PieceDetail {
                     id: id.clone(),
                     collection_id: collection_id.clone(),
                     uri: uri.clone(),
@@ -143,7 +148,8 @@ async fn get_graph_data(state: State<'_, AppState>) -> Result<Value, String> {
                     is_active,
                     content: "".to_string(),
                     metadata: HashMap::new(),
-                });
+                }
+            });
 
             // Extract a clean title for the node label
             let mut title = info.content.trim().to_string();
@@ -181,16 +187,21 @@ async fn get_graph_data(state: State<'_, AppState>) -> Result<Value, String> {
     }
 
     // Query all relations
-    let mut stmt = conn.prepare("SELECT source_piece_id, target_piece_id, relation_type, created_at FROM relations;")
+    let mut stmt = conn
+        .prepare(
+            "SELECT source_piece_id, target_piece_id, relation_type, created_at FROM relations;",
+        )
         .map_err(|e| e.to_string())?;
-    let rel_rows = stmt.query_map([], |row| {
-        Ok(json!({
-            "source": row.get::<_, String>(0)?,
-            "target": row.get::<_, String>(1)?,
-            "type": row.get::<_, String>(2)?,
-            "created_at": row.get::<_, String>(3)?,
-        }))
-    }).map_err(|e| e.to_string())?;
+    let rel_rows = stmt
+        .query_map([], |row| {
+            Ok(json!({
+                "source": row.get::<_, String>(0)?,
+                "target": row.get::<_, String>(1)?,
+                "type": row.get::<_, String>(2)?,
+                "created_at": row.get::<_, String>(3)?,
+            }))
+        })
+        .map_err(|e| e.to_string())?;
 
     let mut edges = Vec::new();
     for row in rel_rows {
@@ -200,16 +211,21 @@ async fn get_graph_data(state: State<'_, AppState>) -> Result<Value, String> {
     }
 
     // Query all piece_history
-    let mut stmt = conn.prepare("SELECT parent_piece_id, child_piece_id, change_type, timestamp FROM piece_history;")
+    let mut stmt = conn
+        .prepare(
+            "SELECT parent_piece_id, child_piece_id, change_type, timestamp FROM piece_history;",
+        )
         .map_err(|e| e.to_string())?;
-    let hist_rows = stmt.query_map([], |row| {
-        Ok(json!({
-            "parent": row.get::<_, String>(0)?,
-            "child": row.get::<_, String>(1)?,
-            "type": row.get::<_, String>(2)?,
-            "timestamp": row.get::<_, String>(3)?,
-        }))
-    }).map_err(|e| e.to_string())?;
+    let hist_rows = stmt
+        .query_map([], |row| {
+            Ok(json!({
+                "parent": row.get::<_, String>(0)?,
+                "child": row.get::<_, String>(1)?,
+                "type": row.get::<_, String>(2)?,
+                "timestamp": row.get::<_, String>(3)?,
+            }))
+        })
+        .map_err(|e| e.to_string())?;
 
     let mut history_edges = Vec::new();
     for row in hist_rows {
@@ -238,11 +254,13 @@ async fn create_piece(
 
     let mut session = crate::model::init_model().map_err(|e| e.to_string())?;
 
-    let folder_path: String = conn.query_row(
-        "SELECT folder_path FROM collections WHERE id = ?;",
-        [&collection_id],
-        |row| row.get(0),
-    ).map_err(|e| format!("Collection not found: {}", e))?;
+    let folder_path: String = conn
+        .query_row(
+            "SELECT folder_path FROM collections WHERE id = ?;",
+            [&collection_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("Collection not found: {}", e))?;
 
     let index = crate::vector_index::load_or_create_index(&vibe_path, &folder_path)
         .map_err(|e| e.to_string())?;
@@ -257,11 +275,12 @@ async fn create_piece(
             &[],
             &mut session,
             &index,
-        ).map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
         Ok(json!(piece))
     } else if piece_type == "contacts" {
-        let contact: crate::contacts::ContactJson = serde_json::from_str(&content)
-            .map_err(|e| format!("Invalid contact JSON: {}", e))?;
+        let contact: crate::contacts::ContactJson =
+            serde_json::from_str(&content).map_err(|e| format!("Invalid contact JSON: {}", e))?;
         let piece = crate::contacts::ingest_contact_piece(
             &mut conn,
             &vibe_path,
@@ -271,11 +290,12 @@ async fn create_piece(
             &[],
             &mut session,
             &index,
-        ).map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
         Ok(json!(piece))
     } else if piece_type == "calendar" {
-        let event: crate::calendar::CalendarJson = serde_json::from_str(&content)
-            .map_err(|e| format!("Invalid calendar JSON: {}", e))?;
+        let event: crate::calendar::CalendarJson =
+            serde_json::from_str(&content).map_err(|e| format!("Invalid calendar JSON: {}", e))?;
         let piece = crate::calendar::ingest_calendar_piece(
             &mut conn,
             &vibe_path,
@@ -285,7 +305,8 @@ async fn create_piece(
             &[],
             &mut session,
             &index,
-        ).map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
         Ok(json!(piece))
     } else {
         Err(format!("Unsupported piece type: {}", piece_type))
@@ -304,14 +325,16 @@ async fn replace_piece(
 
     let mut session = crate::model::init_model().map_err(|e| e.to_string())?;
 
-    let (_collection_id, folder_path, col_type): (String, String, String) = conn.query_row(
-        "SELECT pieces.collection_id, collections.folder_path, collections.type 
+    let (_collection_id, folder_path, col_type): (String, String, String) = conn
+        .query_row(
+            "SELECT pieces.collection_id, collections.folder_path, collections.type 
          FROM pieces 
          JOIN collections ON pieces.collection_id = collections.id 
          WHERE pieces.id = ?;",
-        [&old_piece_id],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-    ).map_err(|e| format!("Old piece not found: {}", e))?;
+            [&old_piece_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .map_err(|e| format!("Old piece not found: {}", e))?;
 
     let index = crate::vector_index::load_or_create_index(&vibe_path, &folder_path)
         .map_err(|e| e.to_string())?;
@@ -326,16 +349,15 @@ async fn replace_piece(
             &[],
             &mut session,
             &index,
-        ).map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
         Ok(json!(piece))
     } else if col_type == "contacts" {
-        let contact: crate::contacts::ContactJson = serde_json::from_str(&content)
-            .map_err(|e| format!("Invalid contact JSON: {}", e))?;
+        let contact: crate::contacts::ContactJson =
+            serde_json::from_str(&content).map_err(|e| format!("Invalid contact JSON: {}", e))?;
         let vcard = crate::contacts::serialize_vcard(&contact);
-        
-        let mut metadata = vec![
-            ("formatted_name", contact.formatted_name.as_str()),
-        ];
+
+        let mut metadata = vec![("formatted_name", contact.formatted_name.as_str())];
         let email_str;
         if let Some(ref email) = contact.email {
             email_str = email.clone();
@@ -366,17 +388,18 @@ async fn replace_piece(
             &metadata,
             &mut session,
             &index,
-        ).map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
         Ok(json!(piece))
     } else if col_type == "calendar" {
-        let event: crate::calendar::CalendarJson = serde_json::from_str(&content)
-            .map_err(|e| format!("Invalid calendar JSON: {}", e))?;
-        let created_at: String = conn.query_row(
-            "SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now');",
-            [],
-            |row| row.get(0),
-        ).map_err(|e| e.to_string())?;
-        
+        let event: crate::calendar::CalendarJson =
+            serde_json::from_str(&content).map_err(|e| format!("Invalid calendar JSON: {}", e))?;
+        let created_at: String = conn
+            .query_row("SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now');", [], |row| {
+                row.get(0)
+            })
+            .map_err(|e| e.to_string())?;
+
         let ics = crate::calendar::serialize_ical(&event, &old_piece_id, &created_at);
 
         let mut metadata = vec![
@@ -404,10 +427,14 @@ async fn replace_piece(
             &metadata,
             &mut session,
             &index,
-        ).map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
         Ok(json!(piece))
     } else {
-        Err(format!("Unsupported collection type for replacement: {}", col_type))
+        Err(format!(
+            "Unsupported collection type for replacement: {}",
+            col_type
+        ))
     }
 }
 
@@ -417,14 +444,16 @@ async fn tombstone_piece(state: State<'_, AppState>, piece_id: String) -> Result
     let mut conn = Connection::open(vibe_path.join("vibe.db"))
         .map_err(|e| format!("Failed to open DB: {}", e))?;
 
-    let folder_path: String = conn.query_row(
-        "SELECT collections.folder_path 
+    let folder_path: String = conn
+        .query_row(
+            "SELECT collections.folder_path 
          FROM pieces 
          JOIN collections ON pieces.collection_id = collections.id 
          WHERE pieces.id = ?;",
-         [&piece_id],
-        |row| row.get(0),
-    ).map_err(|e| format!("Piece or collection not found: {}", e))?;
+            [&piece_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("Piece or collection not found: {}", e))?;
 
     let index = crate::vector_index::load_or_create_index(&vibe_path, &folder_path)
         .map_err(|e| e.to_string())?;
@@ -434,7 +463,12 @@ async fn tombstone_piece(state: State<'_, AppState>, piece_id: String) -> Result
 }
 
 #[tauri::command]
-async fn link_pieces(state: State<'_, AppState>, source_id: String, target_id: String, relation_type: String) -> Result<(), String> {
+async fn link_pieces(
+    state: State<'_, AppState>,
+    source_id: String,
+    target_id: String,
+    relation_type: String,
+) -> Result<(), String> {
     let vibe_path = state.vibe_path.lock().unwrap().clone();
     let conn = Connection::open(vibe_path.join("vibe.db"))
         .map_err(|e| format!("Failed to open DB: {}", e))?;
@@ -461,8 +495,9 @@ async fn search_vibe(
         top_k: limit.unwrap_or(10),
     };
 
-    let vector_results = crate::vector_index::query_pieces(&conn, &vibe_path, &mut session, &query, options)
-        .map_err(|e| format!("Semantic search failed: {}", e))?;
+    let vector_results =
+        crate::vector_index::query_pieces(&conn, &vibe_path, &mut session, &query, options)
+            .map_err(|e| format!("Semantic search failed: {}", e))?;
 
     let mut details = Vec::new();
     for res in vector_results {
@@ -486,32 +521,46 @@ async fn seed_demo_data(state: State<'_, AppState>) -> Result<(), String> {
     let mut session = crate::model::init_model().map_err(|e| e.to_string())?;
 
     // Create collections if they don't exist
-    let notes_col_id: String = conn.query_row(
-        "SELECT id FROM collections WHERE folder_path = 'notes';",
-        [],
-        |row| row.get(0),
-    ).unwrap_or_else(|_| {
-        let col = crate::collections::create_collection(&conn, &vibe_path, "Notes", "text", "notes").unwrap();
-        col.id
-    });
+    let notes_col_id: String = conn
+        .query_row(
+            "SELECT id FROM collections WHERE folder_path = 'notes';",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or_else(|_| {
+            let col =
+                crate::collections::create_collection(&conn, &vibe_path, "Notes", "text", "notes")
+                    .unwrap();
+            col.id
+        });
 
-    let contacts_col_id: String = conn.query_row(
-        "SELECT id FROM collections WHERE folder_path = 'contacts';",
-        [],
-        |row| row.get(0),
-    ).unwrap_or_else(|_| {
-        let col = crate::collections::create_collection(&conn, &vibe_path, "Contacts", "contacts", "contacts").unwrap();
-        col.id
-    });
+    let contacts_col_id: String = conn
+        .query_row(
+            "SELECT id FROM collections WHERE folder_path = 'contacts';",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or_else(|_| {
+            let col = crate::collections::create_collection(
+                &conn, &vibe_path, "Contacts", "contacts", "contacts",
+            )
+            .unwrap();
+            col.id
+        });
 
-    let calendar_col_id: String = conn.query_row(
-        "SELECT id FROM collections WHERE folder_path = 'calendar';",
-        [],
-        |row| row.get(0),
-    ).unwrap_or_else(|_| {
-        let col = crate::collections::create_collection(&conn, &vibe_path, "Calendar", "calendar", "calendar").unwrap();
-        col.id
-    });
+    let calendar_col_id: String = conn
+        .query_row(
+            "SELECT id FROM collections WHERE folder_path = 'calendar';",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or_else(|_| {
+            let col = crate::collections::create_collection(
+                &conn, &vibe_path, "Calendar", "calendar", "calendar",
+            )
+            .unwrap();
+            col.id
+        });
 
     // Ingest text pieces
     let index_notes = crate::vector_index::load_or_create_index(&vibe_path, "notes")
@@ -573,7 +622,8 @@ async fn seed_demo_data(state: State<'_, AppState>) -> Result<(), String> {
         &[],
         &mut session,
         &index_contacts,
-    ).map_err(|e| e.to_string())?;
+    )
+    .map_err(|e| e.to_string())?;
 
     let contact_bob = crate::contacts::ContactJson {
         first_name: Some("Bob".to_string()),
@@ -594,7 +644,8 @@ async fn seed_demo_data(state: State<'_, AppState>) -> Result<(), String> {
         &[],
         &mut session,
         &index_contacts,
-    ).map_err(|e| e.to_string())?;
+    )
+    .map_err(|e| e.to_string())?;
 
     // Ingest calendar events
     let index_calendar = crate::vector_index::load_or_create_index(&vibe_path, "calendar")
@@ -604,7 +655,10 @@ async fn seed_demo_data(state: State<'_, AppState>) -> Result<(), String> {
         summary: "Project Alpha Launch".to_string(),
         start_date: "2026-08-01T09:00:00Z".to_string(),
         end_date: "2026-08-01T10:00:00Z".to_string(),
-        description: Some("Final release and production deployment of Project Alpha local database engines.".to_string()),
+        description: Some(
+            "Final release and production deployment of Project Alpha local database engines."
+                .to_string(),
+        ),
         location: Some("War Room 1A".to_string()),
     };
 
@@ -617,7 +671,8 @@ async fn seed_demo_data(state: State<'_, AppState>) -> Result<(), String> {
         &[],
         &mut session,
         &index_calendar,
-    ).map_err(|e| e.to_string())?;
+    )
+    .map_err(|e| e.to_string())?;
 
     // Link pieces together
     let _ = crate::pieces::link_pieces(&conn, &p2.id, &p1.id, "part_of");
@@ -696,15 +751,12 @@ pub fn run() {
 
             // Build system tray with Quit option
             let quit_i = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
-            let menu = MenuBuilder::new(app)
-                .item(&quit_i)
-                .build()?;
+            let menu = MenuBuilder::new(app).item(&quit_i).build()?;
 
-            let icon = app.default_window_icon().cloned()
-                .unwrap_or_else(|| {
-                    let bytes = include_bytes!("../icons/32x32.png");
-                    tauri::image::Image::from_bytes(bytes).expect("Failed to load fallback icon")
-                });
+            let icon = app.default_window_icon().cloned().unwrap_or_else(|| {
+                let bytes = include_bytes!("../icons/32x32.png");
+                tauri::image::Image::from_bytes(bytes).expect("Failed to load fallback icon")
+            });
 
             let _tray = TrayIconBuilder::new()
                 .icon(icon)
@@ -729,9 +781,13 @@ pub fn run() {
                 };
 
                 // Auto-create default collection if empty
-                let count: i64 = conn.query_row("SELECT COUNT(*) FROM collections;", [], |row| row.get(0)).unwrap_or(0);
+                let count: i64 = conn
+                    .query_row("SELECT COUNT(*) FROM collections;", [], |row| row.get(0))
+                    .unwrap_or(0);
                 if count == 0 {
-                    let _ = crate::collections::create_collection(&conn, &vibe_path, "Notes", "text", "notes");
+                    let _ = crate::collections::create_collection(
+                        &conn, &vibe_path, "Notes", "text", "notes",
+                    );
                 }
 
                 // Register app state for Tauri commands using Arc<Mutex>
@@ -765,14 +821,27 @@ pub fn run() {
                     };
 
                     // Auto-create default collection if empty
-                    let count: i64 = conn.query_row("SELECT COUNT(*) FROM collections;", [], |row| row.get(0)).unwrap_or(0);
+                    let count: i64 = conn
+                        .query_row("SELECT COUNT(*) FROM collections;", [], |row| row.get(0))
+                        .unwrap_or(0);
                     if count == 0 {
-                        let _ = crate::collections::create_collection(&conn, &vibe_path_cloned, "Notes", "text", "notes");
+                        let _ = crate::collections::create_collection(
+                            &conn,
+                            &vibe_path_cloned,
+                            "Notes",
+                            "text",
+                            "notes",
+                        );
                     }
 
                     for line in stdin.lock().lines() {
                         if let Ok(line_str) = line {
-                            let response = crate::mcp::handle_mcp_message(&vibe_path_cloned, &mut conn, &mut session, &line_str);
+                            let response = crate::mcp::handle_mcp_message(
+                                &vibe_path_cloned,
+                                &mut conn,
+                                &mut session,
+                                &line_str,
+                            );
                             use std::io::Write;
                             let _ = writeln!(stdout, "{}", response);
                             let _ = stdout.flush();
@@ -793,9 +862,13 @@ pub fn run() {
                     };
 
                     // Auto-create default collection if empty
-                    let count: i64 = conn.query_row("SELECT COUNT(*) FROM collections;", [], |row| row.get(0)).unwrap_or(0);
+                    let count: i64 = conn
+                        .query_row("SELECT COUNT(*) FROM collections;", [], |row| row.get(0))
+                        .unwrap_or(0);
                     if count == 0 {
-                        let _ = crate::collections::create_collection(&conn, &vibe_path, "Notes", "text", "notes");
+                        let _ = crate::collections::create_collection(
+                            &conn, &vibe_path, "Notes", "text", "notes",
+                        );
                     }
                 }
 
@@ -817,7 +890,7 @@ pub fn run() {
                 tauri::WebviewWindowBuilder::new(
                     app,
                     "main",
-                    tauri::WebviewUrl::App("index.html".into())
+                    tauri::WebviewUrl::App("index.html".into()),
                 )
                 .title("vibeNote")
                 .inner_size(800.0, 600.0)
@@ -829,15 +902,13 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
 
-    app.run(move |_app_handle, event| {
-        match event {
-            tauri::RunEvent::ExitRequested { api, .. } => {
-                if is_mcp {
-                    api.prevent_exit();
-                }
+    app.run(move |_app_handle, event| match event {
+        tauri::RunEvent::ExitRequested { api, .. } => {
+            if is_mcp {
+                api.prevent_exit();
             }
-            _ => {}
         }
+        _ => {}
     });
 }
 

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
-use std::sync::mpsc::Sender;
 use std::io::Write;
+use std::sync::mpsc::Sender;
+use std::sync::{Arc, Mutex, OnceLock};
 
 static SESSIONS: OnceLock<Mutex<HashMap<String, Sender<Vec<u8>>>>> = OnceLock::new();
 
@@ -10,15 +10,18 @@ fn get_sessions() -> &'static Mutex<HashMap<String, Sender<Vec<u8>>>> {
 }
 
 /// Spawns a local Server-Sent Events HTTP server inside the Tauri backend.
-pub fn start_sse_server(vibe_path: std::sync::Arc<std::sync::Mutex<std::path::PathBuf>>) -> Result<(), Box<dyn std::error::Error>> {
+pub fn start_sse_server(
+    vibe_path: std::sync::Arc<std::sync::Mutex<std::path::PathBuf>>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let port = std::env::var("VIBENOTE_SSE_PORT")
         .or_else(|_| std::env::var("PORT"))
         .unwrap_or_else(|_| "3001".to_string());
-    
+
     let addr = format!("127.0.0.1:{}", port);
-    let server = Arc::new(tiny_http::Server::http(&addr).map_err(|e| {
-        std::io::Error::new(std::io::ErrorKind::Other, e)
-    })?);
+    let server = Arc::new(
+        tiny_http::Server::http(&addr)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?,
+    );
     println!("SSE server listening on http://{}", addr);
 
     let model_session = Arc::new(Mutex::new(crate::model::init_model()?));
@@ -26,7 +29,7 @@ pub fn start_sse_server(vibe_path: std::sync::Arc<std::sync::Mutex<std::path::Pa
     for request in server.incoming_requests() {
         let vibe_path_cloned = vibe_path.clone();
         let session_cloned = model_session.clone();
-        
+
         std::thread::spawn(move || {
             if let Err(e) = handle_request(request, vibe_path_cloned, session_cloned) {
                 eprintln!("Error handling HTTP request: {}", e);
@@ -47,9 +50,18 @@ fn handle_request(
         let response = tiny_http::Response::new(
             tiny_http::StatusCode(204),
             vec![
-                tiny_http::Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap(),
-                tiny_http::Header::from_bytes(&b"Access-Control-Allow-Methods"[..], &b"POST, GET, OPTIONS"[..]).unwrap(),
-                tiny_http::Header::from_bytes(&b"Access-Control-Allow-Headers"[..], &b"Content-Type"[..]).unwrap(),
+                tiny_http::Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..])
+                    .unwrap(),
+                tiny_http::Header::from_bytes(
+                    &b"Access-Control-Allow-Methods"[..],
+                    &b"POST, GET, OPTIONS"[..],
+                )
+                .unwrap(),
+                tiny_http::Header::from_bytes(
+                    &b"Access-Control-Allow-Headers"[..],
+                    &b"Content-Type"[..],
+                )
+                .unwrap(),
             ],
             std::io::empty(),
             Some(0),
@@ -85,7 +97,10 @@ fn handle_request(
             writer.flush()?;
 
             // Emit the standard MCP endpoint event telling the client where to send POSTs
-            let initial_event = format!("event: endpoint\ndata: /message?session_id={}\n\n", session_id);
+            let initial_event = format!(
+                "event: endpoint\ndata: /message?session_id={}\n\n",
+                session_id
+            );
             writer.write_all(initial_event.as_bytes())?;
             writer.flush()?;
 
@@ -122,11 +137,17 @@ fn handle_request(
             // Extract session_id supporting both query parameter conventions
             let session_id = if let Some(pos) = url.find("session_id=") {
                 let start = pos + "session_id=".len();
-                let end = url[start..].find('&').map(|x| start + x).unwrap_or(url.len());
+                let end = url[start..]
+                    .find('&')
+                    .map(|x| start + x)
+                    .unwrap_or(url.len());
                 url[start..end].to_string()
             } else if let Some(pos) = url.find("sessionId=") {
                 let start = pos + "sessionId=".len();
-                let end = url[start..].find('&').map(|x| start + x).unwrap_or(url.len());
+                let end = url[start..]
+                    .find('&')
+                    .map(|x| start + x)
+                    .unwrap_or(url.len());
                 url[start..end].to_string()
             } else {
                 "".to_string()
@@ -148,8 +169,9 @@ fn handle_request(
             let tx = match tx_opt {
                 Some(t) => t,
                 None => {
-                    let response = tiny_http::Response::from_string("Session not found".to_string())
-                        .with_status_code(404);
+                    let response =
+                        tiny_http::Response::from_string("Session not found".to_string())
+                            .with_status_code(404);
                     request.respond(response)?;
                     return Ok(());
                 }
@@ -175,13 +197,19 @@ fn handle_request(
 
             // Respond to POST request with success headers
             let response = tiny_http::Response::from_string("{}".to_string())
-                .with_header(tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap())
-                .with_header(tiny_http::Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap());
+                .with_header(
+                    tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
+                        .unwrap(),
+                )
+                .with_header(
+                    tiny_http::Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..])
+                        .unwrap(),
+                );
             request.respond(response)?;
         }
         _ => {
-            let response = tiny_http::Response::from_string("Not Found".to_string())
-                .with_status_code(404);
+            let response =
+                tiny_http::Response::from_string("Not Found".to_string()).with_status_code(404);
             request.respond(response)?;
         }
     }

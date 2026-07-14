@@ -1,5 +1,5 @@
-use std::path::{Path, PathBuf};
 use rusqlite::Connection;
+use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 #[derive(Debug, thiserror::Error)]
@@ -10,7 +10,9 @@ pub enum CollectionError {
     Io(#[from] std::io::Error),
     #[error("Invalid collection type: {0}. Must be 'text', 'contacts', or 'calendar'")]
     InvalidType(String),
-    #[error("Collection nesting is not allowed. Folder name '{0}' must be a single flat directory")]
+    #[error(
+        "Collection nesting is not allowed. Folder name '{0}' must be a single flat directory"
+    )]
     NestedCollection(String),
     #[error("Collection folder name cannot be empty")]
     EmptyFolderName,
@@ -54,7 +56,11 @@ pub fn create_collection(
     if folder_name.is_empty() {
         return Err(CollectionError::EmptyFolderName);
     }
-    if folder_name.contains('/') || folder_name.contains('\\') || folder_name == "." || folder_name == ".." {
+    if folder_name.contains('/')
+        || folder_name.contains('\\')
+        || folder_name == "."
+        || folder_name == ".."
+    {
         return Err(CollectionError::NestedCollection(folder_name.to_string()));
     }
 
@@ -74,7 +80,9 @@ pub fn create_collection(
         |row| row.get(0),
     )?;
     if folder_exists {
-        return Err(CollectionError::FolderAlreadyRegistered(folder_name.to_string()));
+        return Err(CollectionError::FolderAlreadyRegistered(
+            folder_name.to_string(),
+        ));
     }
 
     // 4. Physical folder checks & creation
@@ -116,7 +124,11 @@ mod tests {
     impl TestEnv {
         fn new(name: &str) -> Self {
             let temp_dir = std::env::temp_dir();
-            let vibe_root = temp_dir.join(format!("vibenote_test_vibe_{}_{}", name, Uuid::new_v4().simple()));
+            let vibe_root = temp_dir.join(format!(
+                "vibenote_test_vibe_{}_{}",
+                name,
+                Uuid::new_v4().simple()
+            ));
             fs::create_dir_all(&vibe_root).unwrap();
 
             let db_path = vibe_root.join("vibe.db");
@@ -137,21 +149,36 @@ mod tests {
         let env = TestEnv::new("success");
 
         // Create Text Collection
-        let cat_text = create_collection(&env.conn, &env.vibe_root, "My Notes", "text", "notes").unwrap();
+        let cat_text =
+            create_collection(&env.conn, &env.vibe_root, "My Notes", "text", "notes").unwrap();
         assert_eq!(cat_text.name, "My Notes");
         assert_eq!(cat_text.r#type, "text");
         assert_eq!(cat_text.folder_path, "notes");
         assert!(env.vibe_root.join("notes").is_dir());
 
         // Create Contacts Collection
-        let cat_contacts = create_collection(&env.conn, &env.vibe_root, "Work Contacts", "contacts", "contacts_work").unwrap();
+        let cat_contacts = create_collection(
+            &env.conn,
+            &env.vibe_root,
+            "Work Contacts",
+            "contacts",
+            "contacts_work",
+        )
+        .unwrap();
         assert_eq!(cat_contacts.name, "Work Contacts");
         assert_eq!(cat_contacts.r#type, "contacts");
         assert_eq!(cat_contacts.folder_path, "contacts_work");
         assert!(env.vibe_root.join("contacts_work").is_dir());
 
         // Create Calendar Collection
-        let cat_calendar = create_collection(&env.conn, &env.vibe_root, "Shared Schedule", "calendar", "calendar_shared").unwrap();
+        let cat_calendar = create_collection(
+            &env.conn,
+            &env.vibe_root,
+            "Shared Schedule",
+            "calendar",
+            "calendar_shared",
+        )
+        .unwrap();
         assert_eq!(cat_calendar.name, "Shared Schedule");
         assert_eq!(cat_calendar.r#type, "calendar");
         assert_eq!(cat_calendar.folder_path, "calendar_shared");
@@ -163,19 +190,38 @@ mod tests {
         let env = TestEnv::new("nested");
 
         // Try nested path folder_name "notes/nested"
-        let err_slash = create_collection(&env.conn, &env.vibe_root, "Nested Note", "text", "notes/nested").unwrap_err();
+        let err_slash = create_collection(
+            &env.conn,
+            &env.vibe_root,
+            "Nested Note",
+            "text",
+            "notes/nested",
+        )
+        .unwrap_err();
         assert!(matches!(err_slash, CollectionError::NestedCollection(_)));
 
         // Try parent traversal ".."
-        let err_parent = create_collection(&env.conn, &env.vibe_root, "Parent Note", "text", "..").unwrap_err();
+        let err_parent =
+            create_collection(&env.conn, &env.vibe_root, "Parent Note", "text", "..").unwrap_err();
         assert!(matches!(err_parent, CollectionError::NestedCollection(_)));
 
         // Try backslash
-        let err_backslash = create_collection(&env.conn, &env.vibe_root, "Backslash Note", "text", "notes\\nested").unwrap_err();
-        assert!(matches!(err_backslash, CollectionError::NestedCollection(_)));
+        let err_backslash = create_collection(
+            &env.conn,
+            &env.vibe_root,
+            "Backslash Note",
+            "text",
+            "notes\\nested",
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err_backslash,
+            CollectionError::NestedCollection(_)
+        ));
 
         // Try empty folder name
-        let err_empty = create_collection(&env.conn, &env.vibe_root, "Empty Note", "text", "").unwrap_err();
+        let err_empty =
+            create_collection(&env.conn, &env.vibe_root, "Empty Note", "text", "").unwrap_err();
         assert!(matches!(err_empty, CollectionError::EmptyFolderName));
     }
 
@@ -183,7 +229,8 @@ mod tests {
     fn test_invalid_type() {
         let env = TestEnv::new("invalid_type");
 
-        let err = create_collection(&env.conn, &env.vibe_root, "My Notes", "bad_type", "notes").unwrap_err();
+        let err = create_collection(&env.conn, &env.vibe_root, "My Notes", "bad_type", "notes")
+            .unwrap_err();
         assert!(matches!(err, CollectionError::InvalidType(_)));
     }
 
@@ -195,12 +242,24 @@ mod tests {
         create_collection(&env.conn, &env.vibe_root, "Notes", "text", "notes").unwrap();
 
         // Duplicate name
-        let err_name = create_collection(&env.conn, &env.vibe_root, "Notes", "text", "different_folder").unwrap_err();
+        let err_name = create_collection(
+            &env.conn,
+            &env.vibe_root,
+            "Notes",
+            "text",
+            "different_folder",
+        )
+        .unwrap_err();
         assert!(matches!(err_name, CollectionError::NameAlreadyExists(_)));
 
         // Duplicate folder
-        let err_folder = create_collection(&env.conn, &env.vibe_root, "Other Notes", "text", "notes").unwrap_err();
-        assert!(matches!(err_folder, CollectionError::FolderAlreadyRegistered(_)));
+        let err_folder =
+            create_collection(&env.conn, &env.vibe_root, "Other Notes", "text", "notes")
+                .unwrap_err();
+        assert!(matches!(
+            err_folder,
+            CollectionError::FolderAlreadyRegistered(_)
+        ));
     }
 
     #[test]
@@ -211,7 +270,8 @@ mod tests {
         let file_path = env.vibe_root.join("notes");
         fs::write(&file_path, "I am a file, not a directory").unwrap();
 
-        let err = create_collection(&env.conn, &env.vibe_root, "Notes", "text", "notes").unwrap_err();
+        let err =
+            create_collection(&env.conn, &env.vibe_root, "Notes", "text", "notes").unwrap_err();
         assert!(matches!(err, CollectionError::FileExistsAtPath(_)));
     }
 }

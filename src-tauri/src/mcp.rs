@@ -1,8 +1,8 @@
+use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use rusqlite::Connection;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::collections::{HashSet, HashMap};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct JsonRpcRequest {
@@ -43,21 +43,29 @@ pub struct PieceDetail {
 }
 
 /// Helper to load a Piece's full details and raw content from the workspace filesystem.
-pub fn get_piece_info(vibe_path: &Path, conn: &Connection, id: &str) -> Result<PieceDetail, String> {
-    let piece_row: (String, Option<String>, String, i32) = conn.query_row(
-        "SELECT collection_id, uri, created_at, is_active FROM pieces WHERE id = ?;",
-        [id],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-    ).map_err(|e| format!("Piece not found in database: {}", e))?;
+pub fn get_piece_info(
+    vibe_path: &Path,
+    conn: &Connection,
+    id: &str,
+) -> Result<PieceDetail, String> {
+    let piece_row: (String, Option<String>, String, i32) = conn
+        .query_row(
+            "SELECT collection_id, uri, created_at, is_active FROM pieces WHERE id = ?;",
+            [id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .map_err(|e| format!("Piece not found in database: {}", e))?;
 
     let (collection_id, uri, created_at, is_active_int) = piece_row;
     let is_active = is_active_int == 1;
 
-    let col_row: (String, String) = conn.query_row(
-        "SELECT folder_path, type FROM collections WHERE id = ?;",
-        [&collection_id],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    ).map_err(|e| format!("Collection details not found for piece: {}", e))?;
+    let col_row: (String, String) = conn
+        .query_row(
+            "SELECT folder_path, type FROM collections WHERE id = ?;",
+            [&collection_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|e| format!("Collection details not found for piece: {}", e))?;
 
     let (folder_path, col_type) = col_row;
 
@@ -69,8 +77,7 @@ pub fn get_piece_info(vibe_path: &Path, conn: &Connection, id: &str) -> Result<P
     };
 
     let file_path = vibe_path.join(&folder_path).join(format!("{}.{}", id, ext));
-    let raw_content = std::fs::read_to_string(&file_path)
-        .unwrap_or_else(|_| "".to_string());
+    let raw_content = std::fs::read_to_string(&file_path).unwrap_or_else(|_| "".to_string());
 
     let content = match col_type.as_str() {
         "contacts" => parse_vcard_to_text(&raw_content),
@@ -78,11 +85,14 @@ pub fn get_piece_info(vibe_path: &Path, conn: &Connection, id: &str) -> Result<P
         _ => raw_content,
     };
 
-    let mut meta_stmt = conn.prepare("SELECT key, value FROM piece_metadata WHERE piece_id = ?;")
+    let mut meta_stmt = conn
+        .prepare("SELECT key, value FROM piece_metadata WHERE piece_id = ?;")
         .map_err(|e| e.to_string())?;
-    let meta_rows = meta_stmt.query_map([id], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-    }).map_err(|e| e.to_string())?;
+    let meta_rows = meta_stmt
+        .query_map([id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|e| e.to_string())?;
 
     let mut metadata = HashMap::new();
     for row in meta_rows {
@@ -150,7 +160,9 @@ pub fn handle_mcp_message(
             return "".to_string();
         }
         "tools/list" => handle_tools_list(),
-        "tools/call" => handle_tools_call(vibe_path, conn, session, req.params.unwrap_or(Value::Null)),
+        "tools/call" => {
+            handle_tools_call(vibe_path, conn, session, req.params.unwrap_or(Value::Null))
+        }
         "ping" => Ok(json!({})),
         _ => Err((-32601, format!("Method not found: {}", req.method))),
     };
@@ -370,13 +382,12 @@ fn handle_tools_call(
     session: &mut ort::session::Session,
     params: Value,
 ) -> Result<Value, (i64, String)> {
-    let name = params.get("name")
+    let name = params
+        .get("name")
         .and_then(|v| v.as_str())
         .ok_or_else(|| (-32602, "Missing parameter: name".to_string()))?;
 
-    let arguments = params.get("arguments")
-        .cloned()
-        .unwrap_or(Value::Null);
+    let arguments = params.get("arguments").cloned().unwrap_or(Value::Null);
 
     let res = match name {
         "search_vibe" => call_search_vibe(vibe_path, conn, session, arguments),
@@ -419,21 +430,21 @@ fn call_search_vibe(
     session: &mut ort::session::Session,
     args: Value,
 ) -> Result<Value, String> {
-    let query = args.get("query")
+    let query = args
+        .get("query")
         .and_then(|v| v.as_str())
         .ok_or_else(|| "Missing argument: query".to_string())?;
 
-    let limit = args.get("limit")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(10) as usize;
+    let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
 
     let options = crate::vector_index::QueryOptions {
         collection_id: None,
         top_k: limit,
     };
 
-    let vector_results = crate::vector_index::query_pieces(conn, vibe_path, session, query, options)
-        .map_err(|e| format!("Semantic search failed: {}", e))?;
+    let vector_results =
+        crate::vector_index::query_pieces(conn, vibe_path, session, query, options)
+            .map_err(|e| format!("Semantic search failed: {}", e))?;
 
     let mut details = Vec::new();
     for res in vector_results {
@@ -454,25 +465,26 @@ fn call_search_collection(
     session: &mut ort::session::Session,
     args: Value,
 ) -> Result<Value, String> {
-    let query = args.get("query")
+    let query = args
+        .get("query")
         .and_then(|v| v.as_str())
         .ok_or_else(|| "Missing argument: query".to_string())?;
 
-    let collection_id = args.get("collection_id")
+    let collection_id = args
+        .get("collection_id")
         .and_then(|v| v.as_str())
         .ok_or_else(|| "Missing argument: collection_id".to_string())?;
 
-    let limit = args.get("limit")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(10) as usize;
+    let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
 
     let options = crate::vector_index::QueryOptions {
         collection_id: Some(collection_id.to_string()),
         top_k: limit,
     };
 
-    let vector_results = crate::vector_index::query_pieces(conn, vibe_path, session, query, options)
-        .map_err(|e| format!("Semantic search failed: {}", e))?;
+    let vector_results =
+        crate::vector_index::query_pieces(conn, vibe_path, session, query, options)
+            .map_err(|e| format!("Semantic search failed: {}", e))?;
 
     let mut details = Vec::new();
     for res in vector_results {
@@ -493,20 +505,24 @@ fn call_create_piece(
     session: &mut ort::session::Session,
     args: Value,
 ) -> Result<Value, String> {
-    let content = args.get("content")
+    let content = args
+        .get("content")
         .and_then(|v| v.as_str())
         .ok_or_else(|| "Missing argument: content".to_string())?;
 
-    let collection_id = args.get("collection_id")
+    let collection_id = args
+        .get("collection_id")
         .and_then(|v| v.as_str())
         .ok_or_else(|| "Missing argument: collection_id".to_string())?;
 
     // Look up collection details
-    let col_row: (String, String) = conn.query_row(
-        "SELECT folder_path, type FROM collections WHERE id = ?;",
-        [collection_id],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    ).map_err(|e| format!("Collection not found in database: {}", e))?;
+    let col_row: (String, String) = conn
+        .query_row(
+            "SELECT folder_path, type FROM collections WHERE id = ?;",
+            [collection_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|e| format!("Collection not found in database: {}", e))?;
 
     let (folder_path, col_type) = col_row;
 
@@ -525,7 +541,8 @@ fn call_create_piece(
             }
         }
     }
-    let meta_slice: Vec<(&str, &str)> = metadata_list.iter()
+    let meta_slice: Vec<(&str, &str)> = metadata_list
+        .iter()
         .map(|(k, v)| (k.as_str(), v.as_str()))
         .collect();
 
@@ -540,7 +557,8 @@ fn call_create_piece(
                 &meta_slice,
                 session,
                 &index,
-            ).map_err(|e| format!("Ingestion error: {}", e))?;
+            )
+            .map_err(|e| format!("Ingestion error: {}", e))?;
 
             Ok(json!(piece))
         }
@@ -557,7 +575,8 @@ fn call_create_piece(
                 &meta_slice,
                 session,
                 &index,
-            ).map_err(|e| format!("Ingestion error: {}", e))?;
+            )
+            .map_err(|e| format!("Ingestion error: {}", e))?;
 
             Ok(json!(piece))
         }
@@ -574,7 +593,8 @@ fn call_create_piece(
                 &meta_slice,
                 session,
                 &index,
-            ).map_err(|e| format!("Ingestion error: {}", e))?;
+            )
+            .map_err(|e| format!("Ingestion error: {}", e))?;
 
             Ok(json!(piece))
         }
@@ -587,7 +607,8 @@ fn call_get_piece_details(
     conn: &Connection,
     args: Value,
 ) -> Result<Value, String> {
-    let id = args.get("id")
+    let id = args
+        .get("id")
         .and_then(|v| v.as_str())
         .ok_or_else(|| "Missing argument: id".to_string())?;
 
@@ -597,15 +618,17 @@ fn call_get_piece_details(
     let mut hist_stmt = conn.prepare(
         "SELECT parent_piece_id, child_piece_id, change_type, timestamp FROM piece_history WHERE parent_piece_id = ? OR child_piece_id = ?;"
     ).map_err(|e| e.to_string())?;
-    
-    let hist_rows = hist_stmt.query_map([id, id], |row| {
-        Ok(json!({
-            "parent_piece_id": row.get::<_, String>(0)?,
-            "child_piece_id": row.get::<_, String>(1)?,
-            "change_type": row.get::<_, String>(2)?,
-            "timestamp": row.get::<_, String>(3)?
-        }))
-    }).map_err(|e| e.to_string())?;
+
+    let hist_rows = hist_stmt
+        .query_map([id, id], |row| {
+            Ok(json!({
+                "parent_piece_id": row.get::<_, String>(0)?,
+                "child_piece_id": row.get::<_, String>(1)?,
+                "change_type": row.get::<_, String>(2)?,
+                "timestamp": row.get::<_, String>(3)?
+            }))
+        })
+        .map_err(|e| e.to_string())?;
 
     let mut history = Vec::new();
     for row in hist_rows {
@@ -626,15 +649,18 @@ fn call_get_piece_details(
 }
 
 fn call_link_pieces(conn: &Connection, args: Value) -> Result<Value, String> {
-    let source_id = args.get("source_id")
+    let source_id = args
+        .get("source_id")
         .and_then(|v| v.as_str())
         .ok_or_else(|| "Missing argument: source_id".to_string())?;
 
-    let target_id = args.get("target_id")
+    let target_id = args
+        .get("target_id")
         .and_then(|v| v.as_str())
         .ok_or_else(|| "Missing argument: target_id".to_string())?;
 
-    let relation_type = args.get("relation_type")
+    let relation_type = args
+        .get("relation_type")
         .and_then(|v| v.as_str())
         .ok_or_else(|| "Missing argument: relation_type".to_string())?;
 
@@ -644,8 +670,13 @@ fn call_link_pieces(conn: &Connection, args: Value) -> Result<Value, String> {
     Ok(json!({}))
 }
 
-fn call_get_relations_graph(vibe_path: &Path, conn: &Connection, args: Value) -> Result<Value, String> {
-    let piece_id = args.get("piece_id")
+fn call_get_relations_graph(
+    vibe_path: &Path,
+    conn: &Connection,
+    args: Value,
+) -> Result<Value, String> {
+    let piece_id = args
+        .get("piece_id")
         .and_then(|v| v.as_str())
         .ok_or_else(|| "Missing argument: piece_id".to_string())?;
 
@@ -678,17 +709,20 @@ fn call_get_relations_graph(vibe_path: &Path, conn: &Connection, args: Value) ->
 }
 
 pub fn call_list_collections(conn: &Connection) -> Result<Value, String> {
-    let mut stmt = conn.prepare("SELECT id, name, type, folder_path FROM collections;")
+    let mut stmt = conn
+        .prepare("SELECT id, name, type, folder_path FROM collections;")
         .map_err(|e| e.to_string())?;
-    
-    let rows = stmt.query_map([], |row| {
-        Ok(json!({
-            "id": row.get::<_, String>(0)?,
-            "name": row.get::<_, String>(1)?,
-            "type": row.get::<_, String>(2)?,
-            "folder_path": row.get::<_, String>(3)?
-        }))
-    }).map_err(|e| e.to_string())?;
+
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(json!({
+                "id": row.get::<_, String>(0)?,
+                "name": row.get::<_, String>(1)?,
+                "type": row.get::<_, String>(2)?,
+                "folder_path": row.get::<_, String>(3)?
+            }))
+        })
+        .map_err(|e| e.to_string())?;
 
     let mut list = Vec::new();
     for row in rows {
@@ -700,24 +734,29 @@ pub fn call_list_collections(conn: &Connection) -> Result<Value, String> {
 }
 
 fn call_set_metadata(conn: &Connection, args: Value) -> Result<Value, String> {
-    let piece_id = args.get("piece_id")
+    let piece_id = args
+        .get("piece_id")
         .and_then(|v| v.as_str())
         .ok_or_else(|| "Missing argument: piece_id".to_string())?;
 
-    let key = args.get("key")
+    let key = args
+        .get("key")
         .and_then(|v| v.as_str())
         .ok_or_else(|| "Missing argument: key".to_string())?;
 
-    let value = args.get("value")
+    let value = args
+        .get("value")
         .and_then(|v| v.as_str())
         .ok_or_else(|| "Missing argument: value".to_string())?;
 
     // Check if piece exists
-    let exists: bool = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM pieces WHERE id = ?);",
-        [piece_id],
-        |row| row.get(0),
-    ).unwrap_or(false);
+    let exists: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM pieces WHERE id = ?);",
+            [piece_id],
+            |row| row.get(0),
+        )
+        .unwrap_or(false);
 
     if !exists {
         return Err(format!("Piece with ID '{}' not found.", piece_id));
@@ -726,26 +765,31 @@ fn call_set_metadata(conn: &Connection, args: Value) -> Result<Value, String> {
     conn.execute(
         "INSERT OR REPLACE INTO piece_metadata (piece_id, key, value) VALUES (?, ?, ?);",
         [piece_id, key, value],
-    ).map_err(|e| format!("Failed to set metadata: {}", e))?;
+    )
+    .map_err(|e| format!("Failed to set metadata: {}", e))?;
 
     Ok(json!({}))
 }
 
 fn call_delete_metadata(conn: &Connection, args: Value) -> Result<Value, String> {
-    let piece_id = args.get("piece_id")
+    let piece_id = args
+        .get("piece_id")
         .and_then(|v| v.as_str())
         .ok_or_else(|| "Missing argument: piece_id".to_string())?;
 
-    let key = args.get("key")
+    let key = args
+        .get("key")
         .and_then(|v| v.as_str())
         .ok_or_else(|| "Missing argument: key".to_string())?;
 
     // Check if piece exists
-    let exists: bool = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM pieces WHERE id = ?);",
-        [piece_id],
-        |row| row.get(0),
-    ).unwrap_or(false);
+    let exists: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM pieces WHERE id = ?);",
+            [piece_id],
+            |row| row.get(0),
+        )
+        .unwrap_or(false);
 
     if !exists {
         return Err(format!("Piece with ID '{}' not found.", piece_id));
@@ -754,7 +798,8 @@ fn call_delete_metadata(conn: &Connection, args: Value) -> Result<Value, String>
     conn.execute(
         "DELETE FROM piece_metadata WHERE piece_id = ? AND key = ?;",
         [piece_id, key],
-    ).map_err(|e| format!("Failed to delete metadata: {}", e))?;
+    )
+    .map_err(|e| format!("Failed to delete metadata: {}", e))?;
 
     Ok(json!({}))
 }
@@ -823,8 +868,12 @@ fn format_dtstamp(val: &str) -> String {
         let time_part = &val[9..15]; // 170000
         format!(
             "{}-{}-{}T{}:{}:{}Z",
-            &date_part[0..4], &date_part[4..6], &date_part[6..8],
-            &time_part[0..2], &time_part[2..4], &time_part[4..6]
+            &date_part[0..4],
+            &date_part[4..6],
+            &date_part[6..8],
+            &time_part[0..2],
+            &time_part[2..4],
+            &time_part[4..6]
         )
     } else {
         val.to_string()
@@ -834,11 +883,11 @@ fn format_dtstamp(val: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::init_db;
     use crate::collections::create_collection;
-    use uuid::Uuid;
+    use crate::db::init_db;
     use std::fs;
     use std::path::PathBuf;
+    use uuid::Uuid;
 
     struct TestMcpEnv {
         vibe_root: PathBuf,
@@ -851,7 +900,11 @@ mod tests {
     impl TestMcpEnv {
         fn new(name: &str) -> Self {
             let temp_dir = std::env::temp_dir();
-            let vibe_root = temp_dir.join(format!("vibenote_test_mcp_{}_{}", name, Uuid::new_v4().simple()));
+            let vibe_root = temp_dir.join(format!(
+                "vibenote_test_mcp_{}_{}",
+                name,
+                Uuid::new_v4().simple()
+            ));
             fs::create_dir_all(&vibe_root).unwrap();
 
             let db_path = vibe_root.join("vibe.db");
@@ -860,7 +913,8 @@ mod tests {
             let col = create_collection(&conn, &vibe_root, "Notes", "text", "notes").unwrap();
 
             let session = crate::model::init_model().unwrap();
-            let index = crate::vector_index::load_or_create_index(&vibe_root, &col.folder_path).unwrap();
+            let index =
+                crate::vector_index::load_or_create_index(&vibe_root, &col.folder_path).unwrap();
 
             Self {
                 vibe_root,
@@ -887,15 +941,23 @@ mod tests {
             "id": 1
         });
 
-        let response_str = handle_mcp_message(&env.vibe_root, &mut env.conn, &mut env.session, &serde_json::to_string(&msg).unwrap());
+        let response_str = handle_mcp_message(
+            &env.vibe_root,
+            &mut env.conn,
+            &mut env.session,
+            &serde_json::to_string(&msg).unwrap(),
+        );
         let res: JsonRpcResponse = serde_json::from_str(&response_str).unwrap();
 
         assert_eq!(res.jsonrpc, "2.0");
         assert!(res.error.is_none());
         assert_eq!(res.id, Some(json!(1)));
-        
+
         let result = res.result.unwrap();
-        assert_eq!(result.get("protocolVersion").unwrap().as_str(), Some("2024-11-05"));
+        assert_eq!(
+            result.get("protocolVersion").unwrap().as_str(),
+            Some("2024-11-05")
+        );
         assert!(result.get("capabilities").is_some());
     }
 
@@ -908,13 +970,28 @@ mod tests {
             "id": 2
         });
 
-        let response_str = handle_mcp_message(&env.vibe_root, &mut env.conn, &mut env.session, &serde_json::to_string(&msg).unwrap());
+        let response_str = handle_mcp_message(
+            &env.vibe_root,
+            &mut env.conn,
+            &mut env.session,
+            &serde_json::to_string(&msg).unwrap(),
+        );
         let res: JsonRpcResponse = serde_json::from_str(&response_str).unwrap();
 
         assert_eq!(res.id, Some(json!(2)));
-        let tools = res.result.unwrap().get("tools").unwrap().as_array().unwrap().clone();
-        
-        let names: Vec<&str> = tools.iter().map(|t| t.get("name").unwrap().as_str().unwrap()).collect();
+        let tools = res
+            .result
+            .unwrap()
+            .get("tools")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .clone();
+
+        let names: Vec<&str> = tools
+            .iter()
+            .map(|t| t.get("name").unwrap().as_str().unwrap())
+            .collect();
         assert!(names.contains(&"search_vibe"));
         assert!(names.contains(&"search_collection"));
         assert!(names.contains(&"create_piece"));
@@ -948,15 +1025,27 @@ mod tests {
             "id": 10
         });
 
-        let response_str = handle_mcp_message(&env.vibe_root, &mut env.conn, &mut env.session, &serde_json::to_string(&create_msg).unwrap());
+        let response_str = handle_mcp_message(
+            &env.vibe_root,
+            &mut env.conn,
+            &mut env.session,
+            &serde_json::to_string(&create_msg).unwrap(),
+        );
         let res: JsonRpcResponse = serde_json::from_str(&response_str).unwrap();
-        
+
         let tools_call_res = res.result.unwrap();
-        assert_eq!(tools_call_res.get("isError").unwrap().as_bool(), Some(false));
-        
-        let content_text = tools_call_res.get("content").unwrap().as_array().unwrap()[0].get("text").unwrap().as_str().unwrap();
+        assert_eq!(
+            tools_call_res.get("isError").unwrap().as_bool(),
+            Some(false)
+        );
+
+        let content_text = tools_call_res.get("content").unwrap().as_array().unwrap()[0]
+            .get("text")
+            .unwrap()
+            .as_str()
+            .unwrap();
         let piece: crate::pieces::Piece = serde_json::from_str(content_text).unwrap();
-        
+
         assert_eq!(piece.collection_id, env.collection_id);
 
         // 2. Set metadata key
@@ -973,14 +1062,22 @@ mod tests {
             },
             "id": 11
         });
-        let _ = handle_mcp_message(&env.vibe_root, &mut env.conn, &mut env.session, &serde_json::to_string(&set_meta_msg).unwrap());
+        let _ = handle_mcp_message(
+            &env.vibe_root,
+            &mut env.conn,
+            &mut env.session,
+            &serde_json::to_string(&set_meta_msg).unwrap(),
+        );
 
         // Check if value updated in DB
-        let status_val: String = env.conn.query_row(
-            "SELECT value FROM piece_metadata WHERE piece_id = ? AND key = 'status';",
-            [&piece.id],
-            |row| row.get(0)
-        ).unwrap();
+        let status_val: String = env
+            .conn
+            .query_row(
+                "SELECT value FROM piece_metadata WHERE piece_id = ? AND key = 'status';",
+                [&piece.id],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(status_val, "reviewed");
 
         // 3. Delete metadata key
@@ -996,7 +1093,12 @@ mod tests {
             },
             "id": 12
         });
-        let _ = handle_mcp_message(&env.vibe_root, &mut env.conn, &mut env.session, &serde_json::to_string(&del_meta_msg).unwrap());
+        let _ = handle_mcp_message(
+            &env.vibe_root,
+            &mut env.conn,
+            &mut env.session,
+            &serde_json::to_string(&del_meta_msg).unwrap(),
+        );
 
         let exists: bool = env.conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM piece_metadata WHERE piece_id = ? AND key = 'source');",
@@ -1011,7 +1113,14 @@ mod tests {
         let mut env = TestMcpEnv::new("contacts_cal");
 
         // 1. Create a contacts collection
-        let contacts_col = create_collection(&env.conn, &env.vibe_root, "My Contacts", "contacts", "contacts").unwrap();
+        let contacts_col = create_collection(
+            &env.conn,
+            &env.vibe_root,
+            "My Contacts",
+            "contacts",
+            "contacts",
+        )
+        .unwrap();
 
         // 2. Create a contact piece using create_piece tool
         let contact_json = json!({
@@ -1041,27 +1150,45 @@ mod tests {
             "id": 20
         });
 
-        let response_str = handle_mcp_message(&env.vibe_root, &mut env.conn, &mut env.session, &serde_json::to_string(&create_msg).unwrap());
+        let response_str = handle_mcp_message(
+            &env.vibe_root,
+            &mut env.conn,
+            &mut env.session,
+            &serde_json::to_string(&create_msg).unwrap(),
+        );
         let res: JsonRpcResponse = serde_json::from_str(&response_str).unwrap();
         let tools_call_res = res.result.unwrap();
-        assert_eq!(tools_call_res.get("isError").unwrap().as_bool(), Some(false));
+        assert_eq!(
+            tools_call_res.get("isError").unwrap().as_bool(),
+            Some(false)
+        );
 
-        let content_text = tools_call_res.get("content").unwrap().as_array().unwrap()[0].get("text").unwrap().as_str().unwrap();
+        let content_text = tools_call_res.get("content").unwrap().as_array().unwrap()[0]
+            .get("text")
+            .unwrap()
+            .as_str()
+            .unwrap();
         let piece: crate::pieces::Piece = serde_json::from_str(content_text).unwrap();
 
         // 3. Verify SQLite metadata entries (custom only, no auto-extracted)
-        let role: String = env.conn.query_row(
-            "SELECT value FROM piece_metadata WHERE piece_id = ? AND key = 'role';",
-            [&piece.id],
-            |row| row.get(0),
-        ).unwrap();
+        let role: String = env
+            .conn
+            .query_row(
+                "SELECT value FROM piece_metadata WHERE piece_id = ? AND key = 'role';",
+                [&piece.id],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(role, "admin");
 
-        let has_extracted: bool = env.conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM piece_metadata WHERE piece_id = ? AND key = 'name');",
-            [&piece.id],
-            |row| row.get(0),
-        ).unwrap();
+        let has_extracted: bool = env
+            .conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM piece_metadata WHERE piece_id = ? AND key = 'name');",
+                [&piece.id],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert!(!has_extracted);
 
         // 4. Verify get_piece_details reconstructions
@@ -1076,12 +1203,24 @@ mod tests {
             },
             "id": 21
         });
-        let details_resp_str = handle_mcp_message(&env.vibe_root, &mut env.conn, &mut env.session, &serde_json::to_string(&details_msg).unwrap());
+        let details_resp_str = handle_mcp_message(
+            &env.vibe_root,
+            &mut env.conn,
+            &mut env.session,
+            &serde_json::to_string(&details_msg).unwrap(),
+        );
         let details_res: JsonRpcResponse = serde_json::from_str(&details_resp_str).unwrap();
         let details_call_res = details_res.result.unwrap();
-        assert_eq!(details_call_res.get("isError").unwrap().as_bool(), Some(false));
+        assert_eq!(
+            details_call_res.get("isError").unwrap().as_bool(),
+            Some(false)
+        );
 
-        let details_text = details_call_res.get("content").unwrap().as_array().unwrap()[0].get("text").unwrap().as_str().unwrap();
+        let details_text = details_call_res.get("content").unwrap().as_array().unwrap()[0]
+            .get("text")
+            .unwrap()
+            .as_str()
+            .unwrap();
         let details_json: Value = serde_json::from_str(details_text).unwrap();
         let piece_val = details_json.get("piece").unwrap().clone();
         let detail_obj: PieceDetail = serde_json::from_value(piece_val).unwrap();

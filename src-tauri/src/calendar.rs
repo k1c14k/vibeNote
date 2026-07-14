@@ -1,9 +1,9 @@
-use std::path::Path;
-use rusqlite::Connection;
-use uuid::Uuid;
-use ort::session::Session;
-use usearch::Index;
 use crate::pieces::{Piece, PieceError};
+use ort::session::Session;
+use rusqlite::Connection;
+use std::path::Path;
+use usearch::Index;
+use uuid::Uuid;
 
 #[derive(Debug, thiserror::Error)]
 pub enum CalendarError {
@@ -15,9 +15,9 @@ pub enum CalendarError {
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone, PartialEq, Eq)]
 pub struct CalendarJson {
-    pub summary: String, // Event Title
+    pub summary: String,    // Event Title
     pub start_date: String, // ISO-8601 string
-    pub end_date: String, // ISO-8601 string
+    pub end_date: String,   // ISO-8601 string
     pub description: Option<String>,
     pub location: Option<String>,
 }
@@ -80,14 +80,18 @@ pub fn ingest_calendar_piece(
     crate::model::validate_limits(&nl_text, None, None)?;
 
     // 1. Resolve collection info
-    let (folder_path, cat_type): (String, String) = conn.query_row(
-        "SELECT folder_path, type FROM collections WHERE id = ?;",
-        [collection_id],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    ).map_err(|e| match e {
-        rusqlite::Error::QueryReturnedNoRows => PieceError::CollectionNotFound(collection_id.to_string()),
-        _ => PieceError::Db(e),
-    })?;
+    let (folder_path, cat_type): (String, String) = conn
+        .query_row(
+            "SELECT folder_path, type FROM collections WHERE id = ?;",
+            [collection_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => {
+                PieceError::CollectionNotFound(collection_id.to_string())
+            }
+            _ => PieceError::Db(e),
+        })?;
 
     // 2. Validate collection type is 'calendar'
     if cat_type != "calendar" {
@@ -101,7 +105,9 @@ pub fn ingest_calendar_piece(
     // 3. Verify collection directory exists
     let collection_dir = vibe_path.join(&folder_path);
     if !collection_dir.exists() || !collection_dir.is_dir() {
-        return Err(CalendarError::Piece(PieceError::CollectionFolderMissing(folder_path)));
+        return Err(CalendarError::Piece(PieceError::CollectionFolderMissing(
+            folder_path,
+        )));
     }
 
     // 4. Generate Piece ID and output file path (.ics)
@@ -111,15 +117,16 @@ pub fn ingest_calendar_piece(
 
     // 5. DB changes + Vector changes inside transaction coordinator
     let mut vector_id_opt = None;
-    let mut run_tx_sequence = |conn: &mut Connection, vector_id_opt: &mut Option<u64>| -> Result<String, PieceError> {
+    let mut run_tx_sequence = |conn: &mut Connection,
+                               vector_id_opt: &mut Option<u64>|
+     -> Result<String, PieceError> {
         let tx = conn.transaction()?;
 
         // Retrieve current timestamp
-        let created_at: String = tx.query_row(
-            "SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now');",
-            [],
-            |row| row.get(0),
-        )?;
+        let created_at: String =
+            tx.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now');", [], |row| {
+                row.get(0)
+            })?;
 
         // Serialize calendar and write to disk (timestamp is needed for DTSTAMP)
         let ics_content = serialize_ical(event, &piece_id, &created_at);
@@ -144,8 +151,8 @@ pub fn ingest_calendar_piece(
         *vector_id_opt = Some(vector_id);
 
         // Generate embedding from natural language text representation
-        let embedding = crate::model::generate_embedding(session, &nl_text)
-            .map_err(PieceError::Onnx)?;
+        let embedding =
+            crate::model::generate_embedding(session, &nl_text).map_err(PieceError::Onnx)?;
 
         // Add to memory index
         crate::vector_index::add_vector(index, vector_id, &embedding)?;
@@ -187,8 +194,8 @@ pub fn ingest_calendar_piece(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::init_db;
     use crate::collections::create_collection;
+    use crate::db::init_db;
     use std::fs;
     use std::path::PathBuf;
 
@@ -203,19 +210,30 @@ mod tests {
     impl TestEnv {
         fn new(name: &str) -> Self {
             let temp_dir = std::env::temp_dir();
-            let vibe_root = temp_dir.join(format!("vibenote_test_calendar_{}_{}", name, Uuid::new_v4().simple()));
+            let vibe_root = temp_dir.join(format!(
+                "vibenote_test_calendar_{}_{}",
+                name,
+                Uuid::new_v4().simple()
+            ));
             fs::create_dir_all(&vibe_root).unwrap();
 
             let db_path = vibe_root.join("vibe.db");
             let conn = init_db(&db_path).unwrap();
 
-            let cat = create_collection(&conn, &vibe_root, "My Calendar", "calendar", "calendar").unwrap();
+            let cat = create_collection(&conn, &vibe_root, "My Calendar", "calendar", "calendar")
+                .unwrap();
 
             let session = crate::model::init_model().expect("Failed to init model in TestEnv");
             let index = crate::vector_index::load_or_create_index(&vibe_root, &cat.folder_path)
                 .expect("Failed to load/create vector index in TestEnv");
 
-            TestEnv { vibe_root, conn, collection_id: cat.id, session, index }
+            TestEnv {
+                vibe_root,
+                conn,
+                collection_id: cat.id,
+                session,
+                index,
+            }
         }
     }
 
@@ -268,7 +286,8 @@ mod tests {
             &[("priority", "high"), ("category", "work")],
             &mut env.session,
             &env.index,
-        ).unwrap();
+        )
+        .unwrap();
 
         // 1. Verify returned piece metadata
         assert_eq!(piece.collection_id, env.collection_id);
@@ -276,32 +295,44 @@ mod tests {
         assert!(piece.is_active);
 
         // 2. Verify file content on disk (.ics)
-        let expected_file_path = env.vibe_root.join("calendar").join(format!("{}.ics", piece.id));
+        let expected_file_path = env
+            .vibe_root
+            .join("calendar")
+            .join(format!("{}.ics", piece.id));
         assert!(expected_file_path.is_file());
         let disk_content = fs::read_to_string(&expected_file_path).unwrap();
         assert!(disk_content.contains("SUMMARY:Strategy Meeting\n"));
         assert!(disk_content.contains("DTSTART:20260713T090000Z\n"));
 
         // 3. Verify SQLite metadata entries (custom only, no auto-extracted)
-        let priority: String = env.conn.query_row(
-            "SELECT value FROM piece_metadata WHERE piece_id = ? AND key = 'priority';",
-            [&piece.id],
-            |row| row.get(0),
-        ).unwrap();
+        let priority: String = env
+            .conn
+            .query_row(
+                "SELECT value FROM piece_metadata WHERE piece_id = ? AND key = 'priority';",
+                [&piece.id],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(priority, "high");
 
-        let category: String = env.conn.query_row(
-            "SELECT value FROM piece_metadata WHERE piece_id = ? AND key = 'category';",
-            [&piece.id],
-            |row| row.get(0),
-        ).unwrap();
+        let category: String = env
+            .conn
+            .query_row(
+                "SELECT value FROM piece_metadata WHERE piece_id = ? AND key = 'category';",
+                [&piece.id],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(category, "work");
 
-        let has_extracted: bool = env.conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM piece_metadata WHERE piece_id = ? AND key = 'title');",
-            [&piece.id],
-            |row| row.get(0),
-        ).unwrap();
+        let has_extracted: bool = env
+            .conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM piece_metadata WHERE piece_id = ? AND key = 'title');",
+                [&piece.id],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert!(!has_extracted);
 
         // 4. Verify vector was added to index
@@ -313,7 +344,14 @@ mod tests {
         let mut env = TestEnv::new("invalid_cat");
 
         // Create a 'contacts' collection
-        let contact_cat = create_collection(&env.conn, &env.vibe_root, "My Contacts", "contacts", "contacts").unwrap();
+        let contact_cat = create_collection(
+            &env.conn,
+            &env.vibe_root,
+            "My Contacts",
+            "contacts",
+            "contacts",
+        )
+        .unwrap();
 
         let event = CalendarJson {
             summary: "Generic Event".to_string(),
@@ -332,9 +370,13 @@ mod tests {
             &[],
             &mut env.session,
             &env.index,
-        ).unwrap_err();
+        )
+        .unwrap_err();
 
-        assert!(matches!(err, CalendarError::Piece(PieceError::InvalidCollectionType(_, _, _))));
+        assert!(matches!(
+            err,
+            CalendarError::Piece(PieceError::InvalidCollectionType(_, _, _))
+        ));
     }
 
     #[test]
@@ -364,7 +406,8 @@ mod tests {
             &[],
             &mut env.session,
             &env.index,
-        ).unwrap_err();
+        )
+        .unwrap_err();
 
         assert!(matches!(err, CalendarError::Piece(PieceError::Db(_))));
 

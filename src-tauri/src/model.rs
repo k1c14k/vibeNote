@@ -1,8 +1,8 @@
-use ort::session::Session;
-use tokenizers::Tokenizer;
-use std::sync::OnceLock;
 use crate::pieces::PieceError;
 use ndarray::Array2;
+use ort::session::Session;
+use std::sync::OnceLock;
+use tokenizers::Tokenizer;
 
 pub const MODEL_BYTES: &[u8] = include_bytes!("../model.onnx");
 pub const TOKENIZER_BYTES: &[u8] = include_bytes!("../tokenizer.json");
@@ -15,8 +15,11 @@ static TOKENIZER: OnceLock<Tokenizer> = OnceLock::new();
 /// Returns a reference to the global embedding tokenizer.
 pub fn get_tokenizer() -> &'static Tokenizer {
     TOKENIZER.get_or_init(|| {
-        let mut tokenizer = Tokenizer::from_bytes(TOKENIZER_BYTES).expect("Failed to load tokenizer from bytes");
-        tokenizer.with_truncation(None).expect("Failed to disable truncation");
+        let mut tokenizer =
+            Tokenizer::from_bytes(TOKENIZER_BYTES).expect("Failed to load tokenizer from bytes");
+        tokenizer
+            .with_truncation(None)
+            .expect("Failed to disable truncation");
         tokenizer
     })
 }
@@ -42,7 +45,8 @@ pub fn validate_limits(
 
     // 2. Precise token limit check
     let tokenizer = get_tokenizer();
-    let encoding = tokenizer.encode(text, true)
+    let encoding = tokenizer
+        .encode(text, true)
         .map_err(|e| PieceError::Tokenizer(e.to_string()))?;
     let token_count = encoding.get_ids().len();
 
@@ -55,14 +59,14 @@ pub fn validate_limits(
 
 /// Initializes the embedding model session.
 pub fn init_model() -> Result<Session, ort::Error> {
-    Session::builder()?
-        .commit_from_memory(MODEL_BYTES)
+    Session::builder()?.commit_from_memory(MODEL_BYTES)
 }
 
 /// Generates a 384-dimensional vector embedding for the given input text using the ONNX model.
 pub fn generate_embedding(session: &mut Session, text: &str) -> Result<Vec<f32>, ort::Error> {
     let tokenizer = get_tokenizer();
-    let encoding = tokenizer.encode(text, true)
+    let encoding = tokenizer
+        .encode(text, true)
         .map_err(|e| ort::Error::new(format!("Tokenizer error: {}", e)))?;
 
     let ids = encoding.get_ids();
@@ -71,20 +75,16 @@ pub fn generate_embedding(session: &mut Session, text: &str) -> Result<Vec<f32>,
     let seq_len = ids.len();
 
     // Convert encoding outputs into int64 arrays of shape [1, seq_len]
-    let input_ids = Array2::from_shape_vec(
-        (1, seq_len),
-        ids.iter().map(|&x| x as i64).collect(),
-    ).map_err(|e| ort::Error::new(format!("Failed to create ndarray: {:?}", e)))?;
+    let input_ids = Array2::from_shape_vec((1, seq_len), ids.iter().map(|&x| x as i64).collect())
+        .map_err(|e| ort::Error::new(format!("Failed to create ndarray: {:?}", e)))?;
 
-    let attention_mask = Array2::from_shape_vec(
-        (1, seq_len),
-        mask.iter().map(|&x| x as i64).collect(),
-    ).map_err(|e| ort::Error::new(format!("Failed to create ndarray: {:?}", e)))?;
+    let attention_mask =
+        Array2::from_shape_vec((1, seq_len), mask.iter().map(|&x| x as i64).collect())
+            .map_err(|e| ort::Error::new(format!("Failed to create ndarray: {:?}", e)))?;
 
-    let token_type_ids = Array2::from_shape_vec(
-        (1, seq_len),
-        type_ids.iter().map(|&x| x as i64).collect(),
-    ).map_err(|e| ort::Error::new(format!("Failed to create ndarray: {:?}", e)))?;
+    let token_type_ids =
+        Array2::from_shape_vec((1, seq_len), type_ids.iter().map(|&x| x as i64).collect())
+            .map_err(|e| ort::Error::new(format!("Failed to create ndarray: {:?}", e)))?;
 
     let input_ids_val = ort::value::Value::from_array(input_ids)?;
     let attention_mask_val = ort::value::Value::from_array(attention_mask)?;
@@ -98,8 +98,7 @@ pub fn generate_embedding(session: &mut Session, text: &str) -> Result<Vec<f32>,
     ])?;
 
     // Extract output shape and data
-    let (shape, data) = outputs["last_hidden_state"]
-        .try_extract_tensor::<f32>()?;
+    let (shape, data) = outputs["last_hidden_state"].try_extract_tensor::<f32>()?;
 
     let hidden_dim = shape[2] as usize;
 
@@ -139,16 +138,23 @@ mod tests {
     #[test]
     fn test_init_model() {
         let session = init_model().expect("Failed to initialize model session");
-        assert!(!session.inputs().is_empty(), "Model should have at least one input node");
-        assert!(!session.outputs().is_empty(), "Model should have at least one output node");
+        assert!(
+            !session.inputs().is_empty(),
+            "Model should have at least one input node"
+        );
+        assert!(
+            !session.outputs().is_empty(),
+            "Model should have at least one output node"
+        );
     }
 
     #[test]
     fn test_generate_embedding() {
         let mut session = init_model().unwrap();
-        let embedding = generate_embedding(&mut session, "Hello from vibeNote embedding engine!").unwrap();
+        let embedding =
+            generate_embedding(&mut session, "Hello from vibeNote embedding engine!").unwrap();
         assert_eq!(embedding.len(), 384);
-        
+
         // Ensure L2 normalized (norm is close to 1.0)
         let norm = embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
         assert!((norm - 1.0).abs() < 1e-4);
@@ -157,7 +163,9 @@ mod tests {
     #[test]
     fn test_get_tokenizer() {
         let tokenizer = get_tokenizer();
-        let encoding = tokenizer.encode("Hello world from vibeNote!", true).unwrap();
+        let encoding = tokenizer
+            .encode("Hello world from vibeNote!", true)
+            .unwrap();
         assert!(!encoding.get_ids().is_empty());
     }
 

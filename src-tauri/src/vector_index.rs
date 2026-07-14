@@ -1,6 +1,6 @@
+use rusqlite::{Connection, OptionalExtension};
 use std::collections::HashSet;
 use std::path::Path;
-use rusqlite::{Connection, OptionalExtension};
 use usearch::{Index, IndexOptions, MetricKind, ScalarKind};
 
 #[derive(Debug, thiserror::Error)]
@@ -34,20 +34,30 @@ pub fn load_or_create_index(vibe_path: &Path, index_name: &str) -> Result<Index,
 
     if usearch_path.exists() {
         let path_str = usearch_path.to_str().ok_or(VectorIndexError::InvalidPath)?;
-        index.load(path_str).map_err(|e| VectorIndexError::USearch(format!("Failed to load index from {}: {:?}", path_str, e)))?;
+        index.load(path_str).map_err(|e| {
+            VectorIndexError::USearch(format!("Failed to load index from {}: {:?}", path_str, e))
+        })?;
     } else {
         // New index: pre-allocate memory for 500 vectors
-        index.reserve(500).map_err(|e| VectorIndexError::USearch(format!("Failed to reserve capacity: {:?}", e)))?;
+        index.reserve(500).map_err(|e| {
+            VectorIndexError::USearch(format!("Failed to reserve capacity: {:?}", e))
+        })?;
     }
 
     Ok(index)
 }
 
 /// Saves the index to `<vibe_path>/<index_name>.usearch`.
-pub fn save_index(index: &Index, vibe_path: &Path, index_name: &str) -> Result<(), VectorIndexError> {
+pub fn save_index(
+    index: &Index,
+    vibe_path: &Path,
+    index_name: &str,
+) -> Result<(), VectorIndexError> {
     let usearch_path = vibe_path.join(format!("{}.usearch", index_name));
     let path_str = usearch_path.to_str().ok_or(VectorIndexError::InvalidPath)?;
-    index.save(path_str).map_err(|e| VectorIndexError::USearch(format!("Failed to save index to {}: {:?}", path_str, e)))?;
+    index.save(path_str).map_err(|e| {
+        VectorIndexError::USearch(format!("Failed to save index to {}: {:?}", path_str, e))
+    })?;
     Ok(())
 }
 
@@ -56,10 +66,12 @@ pub fn add_vector(index: &Index, vector_id: u64, vector: &[f32]) -> Result<(), V
     let size = index.size();
     let capacity = index.capacity();
     if size >= capacity {
-        index.reserve(capacity + 500)
+        index
+            .reserve(capacity + 500)
             .map_err(|e| VectorIndexError::USearch(format!("Failed to grow capacity: {:?}", e)))?;
     }
-    index.add(vector_id, vector)
+    index
+        .add(vector_id, vector)
         .map_err(|e| VectorIndexError::USearch(format!("Failed to add vector: {:?}", e)))?;
     Ok(())
 }
@@ -67,11 +79,13 @@ pub fn add_vector(index: &Index, vector_id: u64, vector: &[f32]) -> Result<(), V
 /// Maps a string Piece ID (UUID) to a `u64` vector key.
 /// If the mapping does not exist, a new auto-incremented mapping is created.
 pub fn get_or_create_vector_id(conn: &Connection, piece_id: &str) -> Result<u64, rusqlite::Error> {
-    let existing: Option<i64> = conn.query_row(
-        "SELECT vector_id FROM vector_mapping WHERE piece_id = ?;",
-        [piece_id],
-        |row| row.get(0),
-    ).optional()?;
+    let existing: Option<i64> = conn
+        .query_row(
+            "SELECT vector_id FROM vector_mapping WHERE piece_id = ?;",
+            [piece_id],
+            |row| row.get(0),
+        )
+        .optional()?;
 
     if let Some(vid) = existing {
         Ok(vid as u64)
@@ -91,7 +105,8 @@ pub fn get_piece_id(conn: &Connection, vector_id: u64) -> Result<Option<String>,
         "SELECT piece_id FROM vector_mapping WHERE vector_id = ?;",
         [vector_id as i64],
         |row| row.get(0),
-    ).optional()
+    )
+    .optional()
 }
 
 /// The result of a semantic similarity query.
@@ -145,11 +160,13 @@ pub fn query_pieces(
 
     if let Some(ref cid) = options.collection_id {
         // Look up collection's folder path
-        let folder_path_opt: Option<String> = conn.query_row(
-            "SELECT folder_path FROM collections WHERE id = ?;",
-            [cid],
-            |row| row.get(0),
-        ).optional()?;
+        let folder_path_opt: Option<String> = conn
+            .query_row(
+                "SELECT folder_path FROM collections WHERE id = ?;",
+                [cid],
+                |row| row.get(0),
+            )
+            .optional()?;
 
         let folder_path = match folder_path_opt {
             Some(path) => path,
@@ -160,7 +177,11 @@ pub fn query_pieces(
         let search_results = index
             .search(&embedding, options.top_k)
             .map_err(|e| VectorIndexError::USearch(format!("{:?}", e)))?;
-        for (key, dist) in search_results.keys.iter().zip(search_results.distances.iter()) {
+        for (key, dist) in search_results
+            .keys
+            .iter()
+            .zip(search_results.distances.iter())
+        {
             if let Some(piece_id) = get_piece_id(conn, *key)? {
                 candidates.push((piece_id, *dist));
             }
@@ -168,7 +189,8 @@ pub fn query_pieces(
     } else {
         // Query globally: get all collections
         let mut stmt = conn.prepare("SELECT folder_path FROM collections;")?;
-        let folder_paths = stmt.query_map([], |row| row.get::<_, String>(0))?
+        let folder_paths = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
             .filter_map(|r| r.ok())
             .collect::<Vec<String>>();
 
@@ -179,7 +201,11 @@ pub fn query_pieces(
                 let search_results = index
                     .search(&embedding, options.top_k)
                     .map_err(|e| VectorIndexError::USearch(format!("{:?}", e)))?;
-                for (key, dist) in search_results.keys.iter().zip(search_results.distances.iter()) {
+                for (key, dist) in search_results
+                    .keys
+                    .iter()
+                    .zip(search_results.distances.iter())
+                {
                     if let Some(piece_id) = get_piece_id(conn, *key)? {
                         candidates.push((piece_id, *dist));
                     }
@@ -252,14 +278,14 @@ pub fn query_pieces(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::collections::create_collection;
+    use crate::db::init_db;
     use crate::model::init_model;
     use crate::pieces::ingest_text_piece;
-    use crate::collections::create_collection;
-    use super::*;
-    use crate::db::init_db;
-    use uuid::Uuid;
-    use std::path::PathBuf;
     use std::fs;
+    use std::path::PathBuf;
+    use uuid::Uuid;
 
     struct TestDir {
         path: PathBuf,
@@ -267,7 +293,10 @@ mod tests {
 
     impl TestDir {
         fn new() -> Self {
-            let path = std::env::temp_dir().join(format!("vibenote_test_vector_index_{}", Uuid::new_v4().simple()));
+            let path = std::env::temp_dir().join(format!(
+                "vibenote_test_vector_index_{}",
+                Uuid::new_v4().simple()
+            ));
             fs::create_dir_all(&path).unwrap();
             Self { path }
         }
@@ -283,7 +312,7 @@ mod tests {
     fn test_index_creation_and_reservation() {
         let index = create_default_index().unwrap();
         assert_eq!(index.dimensions(), 384);
-        
+
         index.reserve(10_000).unwrap();
         assert!(index.capacity() >= 10_000);
     }
@@ -311,7 +340,7 @@ mod tests {
     fn test_save_load_and_vector_ops() {
         let dir = TestDir::new();
         let vibe_path = &dir.path;
-        
+
         // 1. Create and add vector
         let index = load_or_create_index(vibe_path, "vibe").unwrap();
         assert!(index.capacity() >= 500);
@@ -319,7 +348,7 @@ mod tests {
 
         let mut vec = vec![0.0f32; 384];
         vec[0] = 1.0f32; // Unit vector on first axis
-        
+
         index.add(42, &vec).unwrap();
         assert_eq!(index.size(), 1);
 
@@ -384,8 +413,11 @@ mod tests {
 
     impl QueryTestEnv {
         fn new(name: &str) -> Self {
-            let vibe_root = std::env::temp_dir()
-                .join(format!("vibenote_query_test_{}_{}", name, Uuid::new_v4().simple()));
+            let vibe_root = std::env::temp_dir().join(format!(
+                "vibenote_query_test_{}_{}",
+                name,
+                Uuid::new_v4().simple()
+            ));
             fs::create_dir_all(&vibe_root).unwrap();
 
             let db_path = vibe_root.join("vibe.db");
@@ -394,9 +426,16 @@ mod tests {
             let cat = create_collection(&conn, &vibe_root, "Notes", "text", "notes").unwrap();
 
             let session = init_model().expect("Failed to init model");
-            let index = load_or_create_index(&vibe_root, &cat.folder_path).expect("Failed to load/create index");
+            let index = load_or_create_index(&vibe_root, &cat.folder_path)
+                .expect("Failed to load/create index");
 
-            QueryTestEnv { vibe_root, conn, session, index, collection_id: cat.id }
+            QueryTestEnv {
+                vibe_root,
+                conn,
+                session,
+                index,
+                collection_id: cat.id,
+            }
         }
     }
 
@@ -411,27 +450,61 @@ mod tests {
         let mut env = QueryTestEnv::new("ranked");
 
         // Ingest 3 semantically distinct pieces
-        ingest_text_piece(&mut env.conn, &env.vibe_root, &env.collection_id,
+        ingest_text_piece(
+            &mut env.conn,
+            &env.vibe_root,
+            &env.collection_id,
             "The Eiffel Tower is a famous landmark in Paris, France.",
-            None, &[], &mut env.session, &env.index).unwrap();
-        let target = ingest_text_piece(&mut env.conn, &env.vibe_root, &env.collection_id,
+            None,
+            &[],
+            &mut env.session,
+            &env.index,
+        )
+        .unwrap();
+        let target = ingest_text_piece(
+            &mut env.conn,
+            &env.vibe_root,
+            &env.collection_id,
             "Rust is a systems programming language focused on safety and performance.",
-            None, &[], &mut env.session, &env.index).unwrap();
-        ingest_text_piece(&mut env.conn, &env.vibe_root, &env.collection_id,
+            None,
+            &[],
+            &mut env.session,
+            &env.index,
+        )
+        .unwrap();
+        ingest_text_piece(
+            &mut env.conn,
+            &env.vibe_root,
+            &env.collection_id,
             "Chocolate cake is a delicious dessert enjoyed worldwide.",
-            None, &[], &mut env.session, &env.index).unwrap();
+            None,
+            &[],
+            &mut env.session,
+            &env.index,
+        )
+        .unwrap();
 
         let results = query_pieces(
             &env.conn,
             &env.vibe_root,
             &mut env.session,
             "systems programming language memory safety",
-            QueryOptions { top_k: 3, ..Default::default() },
-        ).unwrap();
+            QueryOptions {
+                top_k: 3,
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
         assert!(!results.is_empty(), "Should return results");
-        assert_eq!(results[0].piece_id, target.id, "Most relevant piece should rank first");
-        assert!(results[0].similarity > 0.0, "Top result should have a positive similarity score");
+        assert_eq!(
+            results[0].piece_id, target.id,
+            "Most relevant piece should rank first"
+        );
+        assert!(
+            results[0].similarity > 0.0,
+            "Top result should have a positive similarity score"
+        );
         // Results must be in descending similarity order
         for w in results.windows(2) {
             assert!(w[0].similarity >= w[1].similarity);
@@ -443,26 +516,57 @@ mod tests {
         let mut env = QueryTestEnv::new("collection_filter");
 
         // Create a second collection
-        let cat2 = create_collection(&env.conn, &env.vibe_root, "Work Notes", "text", "work_notes").unwrap();
+        let cat2 = create_collection(
+            &env.conn,
+            &env.vibe_root,
+            "Work Notes",
+            "text",
+            "work_notes",
+        )
+        .unwrap();
 
-        let p1 = ingest_text_piece(&mut env.conn, &env.vibe_root, &env.collection_id,
+        let p1 = ingest_text_piece(
+            &mut env.conn,
+            &env.vibe_root,
+            &env.collection_id,
             "Rust programming language overview.",
-            None, &[], &mut env.session, &env.index).unwrap();
-        let _p2 = ingest_text_piece(&mut env.conn, &env.vibe_root, &cat2.id,
+            None,
+            &[],
+            &mut env.session,
+            &env.index,
+        )
+        .unwrap();
+        let _p2 = ingest_text_piece(
+            &mut env.conn,
+            &env.vibe_root,
+            &cat2.id,
             "Rust programming language details.",
-            None, &[], &mut env.session, &env.index).unwrap();
+            None,
+            &[],
+            &mut env.session,
+            &env.index,
+        )
+        .unwrap();
 
         let results = query_pieces(
             &env.conn,
             &env.vibe_root,
             &mut env.session,
             "Rust programming",
-            QueryOptions { collection_id: Some(env.collection_id.clone()), top_k: 10, ..Default::default() },
-        ).unwrap();
+            QueryOptions {
+                collection_id: Some(env.collection_id.clone()),
+                top_k: 10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
         assert!(!results.is_empty());
         for r in &results {
-            assert_eq!(r.piece_id, p1.id, "Only pieces from the filtered collection should be returned");
+            assert_eq!(
+                r.piece_id, p1.id,
+                "Only pieces from the filtered collection should be returned"
+            );
         }
     }
 
@@ -470,20 +574,34 @@ mod tests {
     fn test_query_excludes_tombstoned() {
         let mut env = QueryTestEnv::new("tombstone");
 
-        let p = ingest_text_piece(&mut env.conn, &env.vibe_root, &env.collection_id,
+        let p = ingest_text_piece(
+            &mut env.conn,
+            &env.vibe_root,
+            &env.collection_id,
             "Rust is a great systems language.",
-            None, &[], &mut env.session, &env.index).unwrap();
+            None,
+            &[],
+            &mut env.session,
+            &env.index,
+        )
+        .unwrap();
 
         // Tombstone the piece
-        env.conn.execute("UPDATE pieces SET is_active = 0 WHERE id = ?;", [&p.id]).unwrap();
+        env.conn
+            .execute("UPDATE pieces SET is_active = 0 WHERE id = ?;", [&p.id])
+            .unwrap();
 
         let results = query_pieces(
             &env.conn,
             &env.vibe_root,
             &mut env.session,
             "Rust systems language",
-            QueryOptions { top_k: 5, ..Default::default() },
-        ).unwrap();
+            QueryOptions {
+                top_k: 5,
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
         assert!(
             results.iter().all(|r| r.piece_id != p.id),
@@ -501,7 +619,8 @@ mod tests {
             &mut env.session,
             "anything",
             QueryOptions::default(),
-        ).unwrap();
+        )
+        .unwrap();
 
         assert!(results.is_empty(), "Empty index should return no results");
     }
@@ -510,25 +629,58 @@ mod tests {
     fn test_query_no_collection_returns_all() {
         let mut env = QueryTestEnv::new("all_collections");
 
-        let cat2 = create_collection(&env.conn, &env.vibe_root, "Work Notes", "text", "work_notes").unwrap();
+        let cat2 = create_collection(
+            &env.conn,
+            &env.vibe_root,
+            "Work Notes",
+            "text",
+            "work_notes",
+        )
+        .unwrap();
 
-        let p1 = ingest_text_piece(&mut env.conn, &env.vibe_root, &env.collection_id,
+        let p1 = ingest_text_piece(
+            &mut env.conn,
+            &env.vibe_root,
+            &env.collection_id,
             "Rust programming language overview.",
-            None, &[], &mut env.session, &env.index).unwrap();
-        let p2 = ingest_text_piece(&mut env.conn, &env.vibe_root, &cat2.id,
+            None,
+            &[],
+            &mut env.session,
+            &env.index,
+        )
+        .unwrap();
+        let p2 = ingest_text_piece(
+            &mut env.conn,
+            &env.vibe_root,
+            &cat2.id,
             "Rust memory safety and concurrency.",
-            None, &[], &mut env.session, &env.index).unwrap();
+            None,
+            &[],
+            &mut env.session,
+            &env.index,
+        )
+        .unwrap();
 
         let results = query_pieces(
             &env.conn,
             &env.vibe_root,
             &mut env.session,
             "Rust programming",
-            QueryOptions { top_k: 10, ..Default::default() },
-        ).unwrap();
+            QueryOptions {
+                top_k: 10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
         let ids: Vec<&str> = results.iter().map(|r| r.piece_id.as_str()).collect();
-        assert!(ids.contains(&p1.id.as_str()), "Result should include piece from collection 1");
-        assert!(ids.contains(&p2.id.as_str()), "Result should include piece from collection 2");
+        assert!(
+            ids.contains(&p1.id.as_str()),
+            "Result should include piece from collection 1"
+        );
+        assert!(
+            ids.contains(&p2.id.as_str()),
+            "Result should include piece from collection 2"
+        );
     }
 }

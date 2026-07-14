@@ -1,9 +1,9 @@
-use std::path::Path;
-use rusqlite::Connection;
-use uuid::Uuid;
-use ort::session::Session;
-use usearch::Index;
 use crate::pieces::{Piece, PieceError};
+use ort::session::Session;
+use rusqlite::Connection;
+use std::path::Path;
+use usearch::Index;
+use uuid::Uuid;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ContactError {
@@ -86,14 +86,18 @@ pub fn ingest_contact_piece(
     crate::model::validate_limits(&nl_text, None, None)?;
 
     // 1. Resolve collection info
-    let (folder_path, cat_type): (String, String) = conn.query_row(
-        "SELECT folder_path, type FROM collections WHERE id = ?;",
-        [collection_id],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    ).map_err(|e| match e {
-        rusqlite::Error::QueryReturnedNoRows => PieceError::CollectionNotFound(collection_id.to_string()),
-        _ => PieceError::Db(e),
-    })?;
+    let (folder_path, cat_type): (String, String) = conn
+        .query_row(
+            "SELECT folder_path, type FROM collections WHERE id = ?;",
+            [collection_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => {
+                PieceError::CollectionNotFound(collection_id.to_string())
+            }
+            _ => PieceError::Db(e),
+        })?;
 
     // 2. Validate collection type is 'contacts'
     if cat_type != "contacts" {
@@ -107,7 +111,9 @@ pub fn ingest_contact_piece(
     // 3. Verify collection directory exists
     let collection_dir = vibe_path.join(&folder_path);
     if !collection_dir.exists() || !collection_dir.is_dir() {
-        return Err(ContactError::Piece(PieceError::CollectionFolderMissing(folder_path)));
+        return Err(ContactError::Piece(PieceError::CollectionFolderMissing(
+            folder_path,
+        )));
     }
 
     // 4. Generate Piece ID and output file path (.vcf)
@@ -121,15 +127,16 @@ pub fn ingest_contact_piece(
 
     // 6. DB changes + Vector changes inside transaction coordinator
     let mut vector_id_opt = None;
-    let mut run_tx_sequence = |conn: &mut Connection, vector_id_opt: &mut Option<u64>| -> Result<String, PieceError> {
+    let mut run_tx_sequence = |conn: &mut Connection,
+                               vector_id_opt: &mut Option<u64>|
+     -> Result<String, PieceError> {
         let tx = conn.transaction()?;
 
         // Retrieve current timestamp
-        let created_at: String = tx.query_row(
-            "SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now');",
-            [],
-            |row| row.get(0),
-        )?;
+        let created_at: String =
+            tx.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now');", [], |row| {
+                row.get(0)
+            })?;
 
         // Insert piece record
         tx.execute(
@@ -150,8 +157,8 @@ pub fn ingest_contact_piece(
         *vector_id_opt = Some(vector_id);
 
         // Generate embedding from natural language text representation
-        let embedding = crate::model::generate_embedding(session, &nl_text)
-            .map_err(PieceError::Onnx)?;
+        let embedding =
+            crate::model::generate_embedding(session, &nl_text).map_err(PieceError::Onnx)?;
 
         // Add to memory index
         crate::vector_index::add_vector(index, vector_id, &embedding)?;
@@ -193,8 +200,8 @@ pub fn ingest_contact_piece(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::init_db;
     use crate::collections::create_collection;
+    use crate::db::init_db;
     use std::fs;
     use std::path::PathBuf;
 
@@ -209,19 +216,30 @@ mod tests {
     impl TestEnv {
         fn new(name: &str) -> Self {
             let temp_dir = std::env::temp_dir();
-            let vibe_root = temp_dir.join(format!("vibenote_test_contacts_{}_{}", name, Uuid::new_v4().simple()));
+            let vibe_root = temp_dir.join(format!(
+                "vibenote_test_contacts_{}_{}",
+                name,
+                Uuid::new_v4().simple()
+            ));
             fs::create_dir_all(&vibe_root).unwrap();
 
             let db_path = vibe_root.join("vibe.db");
             let conn = init_db(&db_path).unwrap();
 
-            let cat = create_collection(&conn, &vibe_root, "My Contacts", "contacts", "contacts").unwrap();
+            let cat = create_collection(&conn, &vibe_root, "My Contacts", "contacts", "contacts")
+                .unwrap();
 
             let session = crate::model::init_model().expect("Failed to init model in TestEnv");
             let index = crate::vector_index::load_or_create_index(&vibe_root, &cat.folder_path)
                 .expect("Failed to load/create vector index in TestEnv");
 
-            TestEnv { vibe_root, conn, collection_id: cat.id, session, index }
+            TestEnv {
+                vibe_root,
+                conn,
+                collection_id: cat.id,
+                session,
+                index,
+            }
         }
     }
 
@@ -277,7 +295,8 @@ mod tests {
             &[("role", "admin"), ("status", "active")],
             &mut env.session,
             &env.index,
-        ).unwrap();
+        )
+        .unwrap();
 
         // 1. Verify returned piece metadata
         assert_eq!(piece.collection_id, env.collection_id);
@@ -285,32 +304,44 @@ mod tests {
         assert!(piece.is_active);
 
         // 2. Verify file content on disk (.vcf)
-        let expected_file_path = env.vibe_root.join("contacts").join(format!("{}.vcf", piece.id));
+        let expected_file_path = env
+            .vibe_root
+            .join("contacts")
+            .join(format!("{}.vcf", piece.id));
         assert!(expected_file_path.is_file());
         let disk_content = fs::read_to_string(&expected_file_path).unwrap();
         assert!(disk_content.contains("FN:Alice Smith\n"));
         assert!(disk_content.contains("EMAIL;TYPE=INTERNET:alice@example.com\n"));
 
         // 3. Verify SQLite metadata entries (custom only, no auto-extracted)
-        let role: String = env.conn.query_row(
-            "SELECT value FROM piece_metadata WHERE piece_id = ? AND key = 'role';",
-            [&piece.id],
-            |row| row.get(0),
-        ).unwrap();
+        let role: String = env
+            .conn
+            .query_row(
+                "SELECT value FROM piece_metadata WHERE piece_id = ? AND key = 'role';",
+                [&piece.id],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(role, "admin");
 
-        let status: String = env.conn.query_row(
-            "SELECT value FROM piece_metadata WHERE piece_id = ? AND key = 'status';",
-            [&piece.id],
-            |row| row.get(0),
-        ).unwrap();
+        let status: String = env
+            .conn
+            .query_row(
+                "SELECT value FROM piece_metadata WHERE piece_id = ? AND key = 'status';",
+                [&piece.id],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(status, "active");
 
-        let has_extracted: bool = env.conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM piece_metadata WHERE piece_id = ? AND key = 'name');",
-            [&piece.id],
-            |row| row.get(0),
-        ).unwrap();
+        let has_extracted: bool = env
+            .conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM piece_metadata WHERE piece_id = ? AND key = 'name');",
+                [&piece.id],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert!(!has_extracted);
 
         // 4. Verify vector was added to index
@@ -322,7 +353,8 @@ mod tests {
         let mut env = TestEnv::new("invalid_cat");
 
         // Create a 'text' collection
-        let text_cat = create_collection(&env.conn, &env.vibe_root, "My Notes", "text", "notes").unwrap();
+        let text_cat =
+            create_collection(&env.conn, &env.vibe_root, "My Notes", "text", "notes").unwrap();
 
         let contact = ContactJson {
             first_name: None,
@@ -343,9 +375,13 @@ mod tests {
             &[],
             &mut env.session,
             &env.index,
-        ).unwrap_err();
+        )
+        .unwrap_err();
 
-        assert!(matches!(err, ContactError::Piece(PieceError::InvalidCollectionType(_, _, _))));
+        assert!(matches!(
+            err,
+            ContactError::Piece(PieceError::InvalidCollectionType(_, _, _))
+        ));
     }
 
     #[test]
@@ -383,7 +419,8 @@ mod tests {
             &[],
             &mut env.session,
             &env.index,
-        ).unwrap_err();
+        )
+        .unwrap_err();
 
         assert!(matches!(err, ContactError::Piece(PieceError::Db(_))));
 
