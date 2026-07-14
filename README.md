@@ -6,12 +6,12 @@ vibeNote departs from the traditional folder hierarchy of notes, organizing info
 
 ## Project Resources
 
-- **Specification & Architecture:** [PROJECT_SPEC.md](PROJECT_SPEC.md)
+- **Specification & Architecture:** [PROJECT_SPEC.md](doc/PROJECT_SPEC.md)
 - **MVP Development Roadmap:** [MVP.md](MVP.md)
-- **Immediate Questions (Round 1 - Answered):** [QUESTIONS_IMMEDIATE.md](QUESTIONS_IMMEDIATE.md)
-- **Immediate Questions (Round 2 - Answered):** [QUESTIONS_IMMEDIATE_2.md](QUESTIONS_IMMEDIATE_2.md)
-- **Immediate Questions (Round 3 - Answered):** [QUESTIONS_IMMEDIATE_3.md](QUESTIONS_IMMEDIATE_3.md)
-- **Deferred Questions (Can Be Decided Later):** [QUESTIONS_DEFERRED.md](QUESTIONS_DEFERRED.md)
+- **Immediate Questions (Round 1 - Answered):** [QUESTIONS_IMMEDIATE.md](doc/QUESTIONS_IMMEDIATE.md)
+- **Immediate Questions (Round 2 - Answered):** [QUESTIONS_IMMEDIATE_2.md](doc/QUESTIONS_IMMEDIATE_2.md)
+- **Immediate Questions (Round 3 - Answered):** [QUESTIONS_IMMEDIATE_3.md](doc/QUESTIONS_IMMEDIATE_3.md)
+- **Deferred Questions (Can Be Decided Later):** [QUESTIONS_DEFERRED.md](doc/QUESTIONS_DEFERRED.md)
 
 ## Key Features
 
