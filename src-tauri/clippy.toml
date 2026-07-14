@@ -1,0 +1,2 @@
+# Configure Clippy lint limits for the vibeNote project
+too-many-arguments-threshold = 8

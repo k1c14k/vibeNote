@@ -20,7 +20,7 @@ pub fn start_sse_server(
     let addr = format!("127.0.0.1:{}", port);
     let server = Arc::new(
         tiny_http::Server::http(&addr)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?,
+            .map_err(std::io::Error::other)?,
     );
     println!("SSE server listening on http://{}", addr);
 
@@ -188,7 +188,7 @@ fn handle_request(
             // Route through core handle_mcp_message logic
             let response = {
                 let mut session_guard = model_session.lock().unwrap();
-                crate::mcp::handle_mcp_message(&active_path, &mut conn, &mut *session_guard, &body)
+                crate::mcp::handle_mcp_message(&active_path, &mut conn, &mut session_guard, &body)
             };
 
             // Format as standard MCP SSE event and send to connection thread channel

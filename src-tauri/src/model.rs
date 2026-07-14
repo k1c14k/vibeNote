@@ -115,16 +115,16 @@ pub fn generate_embedding(session: &mut Session, text: &str) -> Result<Vec<f32>,
     }
 
     if mask_sum > 0.0 {
-        for d in 0..hidden_dim {
-            sum[d] /= mask_sum;
+        for val in &mut sum {
+            *val /= mask_sum;
         }
     }
 
     // L2 normalization
     let norm = sum.iter().map(|x| x * x).sum::<f32>().sqrt();
     if norm > 0.0 {
-        for d in 0..hidden_dim {
-            sum[d] /= norm;
+        for val in &mut sum {
+            *val /= norm;
         }
     }
 

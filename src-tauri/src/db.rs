@@ -92,10 +92,10 @@ fn run_migrations(conn: &mut Connection) -> Result<()> {
     let target_version = MIGRATIONS.len() as i32;
 
     if current_version < target_version {
-        for version in (current_version as usize)..MIGRATIONS.len() {
+        for (version, migration) in MIGRATIONS.iter().enumerate().skip(current_version as usize) {
             let tx = conn.transaction()?;
             // Execute the migration SQL
-            tx.execute_batch(MIGRATIONS[version])?;
+            tx.execute_batch(migration)?;
             // Update user_version
             tx.execute(&format!("PRAGMA user_version = {};", version + 1), [])?;
             tx.commit()?;

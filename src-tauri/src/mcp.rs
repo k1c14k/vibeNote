@@ -95,10 +95,8 @@ pub fn get_piece_info(
         .map_err(|e| e.to_string())?;
 
     let mut metadata = HashMap::new();
-    for row in meta_rows {
-        if let Ok((k, v)) = row {
-            metadata.insert(k, v);
-        }
+    for (k, v) in meta_rows.flatten() {
+        metadata.insert(k, v);
     }
 
     Ok(PieceDetail {
@@ -631,10 +629,8 @@ fn call_get_piece_details(
         .map_err(|e| e.to_string())?;
 
     let mut history = Vec::new();
-    for row in hist_rows {
-        if let Ok(val) = row {
-            history.push(val);
-        }
+    for val in hist_rows.flatten() {
+        history.push(val);
     }
 
     // Fetch relations
@@ -725,10 +721,8 @@ pub fn call_list_collections(conn: &Connection) -> Result<Value, String> {
         .map_err(|e| e.to_string())?;
 
     let mut list = Vec::new();
-    for row in rows {
-        if let Ok(val) = row {
-            list.push(val);
-        }
+    for val in rows.flatten() {
+        list.push(val);
     }
     Ok(json!(list))
 }
@@ -815,8 +809,8 @@ fn parse_vcard_to_text(content: &str) -> String {
         title: None,
     };
     for line in content.lines() {
-        if line.starts_with("FN:") {
-            contact.formatted_name = line["FN:".len()..].trim().to_string();
+        if let Some(stripped) = line.strip_prefix("FN:") {
+            contact.formatted_name = stripped.trim().to_string();
         } else if line.starts_with("EMAIL;") || line.starts_with("EMAIL:") {
             let parts: Vec<&str> = line.splitn(2, ':').collect();
             if parts.len() == 2 {
@@ -827,10 +821,10 @@ fn parse_vcard_to_text(content: &str) -> String {
             if parts.len() == 2 {
                 contact.phone = Some(parts[1].trim().to_string());
             }
-        } else if line.starts_with("ORG:") {
-            contact.organization = Some(line["ORG:".len()..].trim().to_string());
-        } else if line.starts_with("TITLE:") {
-            contact.title = Some(line["TITLE:".len()..].trim().to_string());
+        } else if let Some(stripped) = line.strip_prefix("ORG:") {
+            contact.organization = Some(stripped.trim().to_string());
+        } else if let Some(stripped) = line.strip_prefix("TITLE:") {
+            contact.title = Some(stripped.trim().to_string());
         }
     }
     crate::contacts::contact_to_text(&contact)
@@ -845,18 +839,18 @@ fn parse_ical_to_text(content: &str) -> String {
         location: None,
     };
     for line in content.lines() {
-        if line.starts_with("SUMMARY:") {
-            event.summary = line["SUMMARY:".len()..].trim().to_string();
-        } else if line.starts_with("DTSTART:") {
-            let val = line["DTSTART:".len()..].trim().to_string();
+        if let Some(stripped) = line.strip_prefix("SUMMARY:") {
+            event.summary = stripped.trim().to_string();
+        } else if let Some(stripped) = line.strip_prefix("DTSTART:") {
+            let val = stripped.trim().to_string();
             event.start_date = format_dtstamp(&val);
-        } else if line.starts_with("DTEND:") {
-            let val = line["DTEND:".len()..].trim().to_string();
+        } else if let Some(stripped) = line.strip_prefix("DTEND:") {
+            let val = stripped.trim().to_string();
             event.end_date = format_dtstamp(&val);
-        } else if line.starts_with("DESCRIPTION:") {
-            event.description = Some(line["DESCRIPTION:".len()..].trim().to_string());
-        } else if line.starts_with("LOCATION:") {
-            event.location = Some(line["LOCATION:".len()..].trim().to_string());
+        } else if let Some(stripped) = line.strip_prefix("DESCRIPTION:") {
+            event.description = Some(stripped.trim().to_string());
+        } else if let Some(stripped) = line.strip_prefix("LOCATION:") {
+            event.location = Some(stripped.trim().to_string());
         }
     }
     crate::calendar::calendar_to_text(&event)

@@ -136,54 +136,52 @@ async fn get_graph_data(state: State<'_, AppState>) -> Result<Value, String> {
         .map_err(|e| e.to_string())?;
 
     let mut nodes = Vec::new();
-    for row in rows {
-        if let Ok((id, collection_id, uri, created_at, is_active)) = row {
-            // Get piece title/label and content using get_piece_info
-            let info = crate::mcp::get_piece_info(&vibe_path, &conn, &id).unwrap_or_else(|_| {
-                crate::mcp::PieceDetail {
-                    id: id.clone(),
-                    collection_id: collection_id.clone(),
-                    uri: uri.clone(),
-                    created_at: created_at.clone(),
-                    is_active,
-                    content: "".to_string(),
-                    metadata: HashMap::new(),
-                }
-            });
+    for (id, collection_id, uri, created_at, is_active) in rows.flatten() {
+        // Get piece title/label and content using get_piece_info
+        let info = crate::mcp::get_piece_info(&vibe_path, &conn, &id).unwrap_or_else(|_| {
+            crate::mcp::PieceDetail {
+                id: id.clone(),
+                collection_id: collection_id.clone(),
+                uri: uri.clone(),
+                created_at: created_at.clone(),
+                is_active,
+                content: "".to_string(),
+                metadata: HashMap::new(),
+            }
+        });
 
-            // Extract a clean title for the node label
-            let mut title = info.content.trim().to_string();
-            if let Some(fn_val) = info.metadata.get("formatted_name") {
-                title = fn_val.clone();
-            } else if let Some(sum_val) = info.metadata.get("summary") {
-                title = sum_val.clone();
-            } else {
-                if let Some(first_line) = title.lines().next() {
-                    let mut cleaned = first_line.trim_start_matches('#').trim().to_string();
-                    if cleaned.len() > 35 {
-                        cleaned.truncate(32);
-                        cleaned.push_str("...");
-                    }
-                    if !cleaned.is_empty() {
-                        title = cleaned;
-                    }
+        // Extract a clean title for the node label
+        let mut title = info.content.trim().to_string();
+        if let Some(fn_val) = info.metadata.get("formatted_name") {
+            title = fn_val.clone();
+        } else if let Some(sum_val) = info.metadata.get("summary") {
+            title = sum_val.clone();
+        } else {
+            if let Some(first_line) = title.lines().next() {
+                let mut cleaned = first_line.trim_start_matches('#').trim().to_string();
+                if cleaned.len() > 35 {
+                    cleaned.truncate(32);
+                    cleaned.push_str("...");
                 }
-                if title.is_empty() {
-                    title = format!("Note ({})", &id[..8]);
+                if !cleaned.is_empty() {
+                    title = cleaned;
                 }
             }
-
-            nodes.push(json!({
-                "id": id,
-                "collection_id": collection_id,
-                "uri": uri,
-                "created_at": created_at,
-                "is_active": is_active,
-                "title": title,
-                "content": info.content,
-                "metadata": info.metadata,
-            }));
+            if title.is_empty() {
+                title = format!("Note ({})", &id[..8]);
+            }
         }
+
+        nodes.push(json!({
+            "id": id,
+            "collection_id": collection_id,
+            "uri": uri,
+            "created_at": created_at,
+            "is_active": is_active,
+            "title": title,
+            "content": info.content,
+            "metadata": info.metadata,
+        }));
     }
 
     // Query all relations
@@ -204,10 +202,8 @@ async fn get_graph_data(state: State<'_, AppState>) -> Result<Value, String> {
         .map_err(|e| e.to_string())?;
 
     let mut edges = Vec::new();
-    for row in rel_rows {
-        if let Ok(val) = row {
-            edges.push(val);
-        }
+    for val in rel_rows.flatten() {
+        edges.push(val);
     }
 
     // Query all piece_history
@@ -228,10 +224,8 @@ async fn get_graph_data(state: State<'_, AppState>) -> Result<Value, String> {
         .map_err(|e| e.to_string())?;
 
     let mut history_edges = Vec::new();
-    for row in hist_rows {
-        if let Ok(val) = row {
-            history_edges.push(val);
-        }
+    for val in hist_rows.flatten() {
+        history_edges.push(val);
     }
 
     Ok(json!({
@@ -834,18 +828,16 @@ pub fn run() {
                         );
                     }
 
-                    for line in stdin.lock().lines() {
-                        if let Ok(line_str) = line {
-                            let response = crate::mcp::handle_mcp_message(
-                                &vibe_path_cloned,
-                                &mut conn,
-                                &mut session,
-                                &line_str,
-                            );
-                            use std::io::Write;
-                            let _ = writeln!(stdout, "{}", response);
-                            let _ = stdout.flush();
-                        }
+                    for line_str in stdin.lock().lines().map_while(Result::ok) {
+                        let response = crate::mcp::handle_mcp_message(
+                            &vibe_path_cloned,
+                            &mut conn,
+                            &mut session,
+                            &line_str,
+                        );
+                        use std::io::Write;
+                        let _ = writeln!(stdout, "{}", response);
+                        let _ = stdout.flush();
                     }
                 });
             } else {
@@ -902,13 +894,12 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
 
-    app.run(move |_app_handle, event| match event {
-        tauri::RunEvent::ExitRequested { api, .. } => {
+    app.run(move |_app_handle, event| {
+        if let tauri::RunEvent::ExitRequested { api, .. } = event {
             if is_mcp {
                 api.prevent_exit();
             }
         }
-        _ => {}
     });
 }
 

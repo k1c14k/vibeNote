@@ -19,10 +19,12 @@ pub enum VectorIndexError {
 
 /// Helper to create a new USearch Index configured for the vibeNote embedding model.
 pub fn create_default_index() -> Result<Index, VectorIndexError> {
-    let mut options = IndexOptions::default();
-    options.dimensions = 384;
-    options.metric = MetricKind::Cos;
-    options.quantization = ScalarKind::F32;
+    let options = IndexOptions {
+        dimensions: 384,
+        metric: MetricKind::Cos,
+        quantization: ScalarKind::F32,
+        ..Default::default()
+    };
 
     Index::new(&options).map_err(|e| VectorIndexError::USearch(format!("{:?}", e)))
 }
