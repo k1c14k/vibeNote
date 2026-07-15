@@ -20,6 +20,7 @@ use tauri::{
 
 pub struct AppState {
     pub vibe_path: std::sync::Arc<std::sync::Mutex<PathBuf>>,
+    pub model_session: std::sync::Arc<std::sync::Mutex<ort::session::Session>>,
 }
 
 fn get_config_file_path() -> PathBuf {
@@ -246,7 +247,7 @@ async fn create_piece(
     let mut conn = Connection::open(vibe_path.join("vibe.db"))
         .map_err(|e| format!("Failed to open DB: {}", e))?;
 
-    let mut session = crate::model::init_model().map_err(|e| e.to_string())?;
+    let mut session = state.model_session.lock().unwrap();
 
     let folder_path: String = conn
         .query_row(
@@ -267,7 +268,7 @@ async fn create_piece(
             &content,
             None,
             &[],
-            &mut session,
+            &mut *session,
             &index,
         )
         .map_err(|e| e.to_string())?;
@@ -282,7 +283,7 @@ async fn create_piece(
             &contact,
             None,
             &[],
-            &mut session,
+            &mut *session,
             &index,
         )
         .map_err(|e| e.to_string())?;
@@ -297,7 +298,7 @@ async fn create_piece(
             &event,
             None,
             &[],
-            &mut session,
+            &mut *session,
             &index,
         )
         .map_err(|e| e.to_string())?;
@@ -317,7 +318,7 @@ async fn replace_piece(
     let mut conn = Connection::open(vibe_path.join("vibe.db"))
         .map_err(|e| format!("Failed to open DB: {}", e))?;
 
-    let mut session = crate::model::init_model().map_err(|e| e.to_string())?;
+    let mut session = state.model_session.lock().unwrap();
 
     let (_collection_id, folder_path, col_type): (String, String, String) = conn
         .query_row(
@@ -341,7 +342,7 @@ async fn replace_piece(
             &content,
             None,
             &[],
-            &mut session,
+            &mut *session,
             &index,
         )
         .map_err(|e| e.to_string())?;
@@ -380,7 +381,7 @@ async fn replace_piece(
             &vcard,
             None,
             &metadata,
-            &mut session,
+            &mut *session,
             &index,
         )
         .map_err(|e| e.to_string())?;
@@ -419,7 +420,7 @@ async fn replace_piece(
             &ics,
             None,
             &metadata,
-            &mut session,
+            &mut *session,
             &index,
         )
         .map_err(|e| e.to_string())?;
@@ -482,7 +483,7 @@ async fn search_vibe(
     let conn = Connection::open(vibe_path.join("vibe.db"))
         .map_err(|e| format!("Failed to open DB: {}", e))?;
 
-    let mut session = crate::model::init_model().map_err(|e| e.to_string())?;
+    let mut session = state.model_session.lock().unwrap();
 
     let options = crate::vector_index::QueryOptions {
         collection_id,
@@ -490,7 +491,7 @@ async fn search_vibe(
     };
 
     let vector_results =
-        crate::vector_index::query_pieces(&conn, &vibe_path, &mut session, &query, options)
+        crate::vector_index::query_pieces(&conn, &vibe_path, &mut *session, &query, options)
             .map_err(|e| format!("Semantic search failed: {}", e))?;
 
     let mut details = Vec::new();
@@ -512,7 +513,7 @@ async fn seed_demo_data(state: State<'_, AppState>) -> Result<(), String> {
     let mut conn = Connection::open(vibe_path.join("vibe.db"))
         .map_err(|e| format!("Failed to open DB: {}", e))?;
 
-    let mut session = crate::model::init_model().map_err(|e| e.to_string())?;
+    let mut session = state.model_session.lock().unwrap();
 
     // Create collections if they don't exist
     let notes_col_id: String = conn
@@ -567,7 +568,7 @@ async fn seed_demo_data(state: State<'_, AppState>) -> Result<(), String> {
         "# Project Alpha Core Vision\nProject Alpha aims to build a fully local-first, privacy-respecting desktop database. It stores items as atomic, immutable Pieces and structures them dynamically with an association graph.",
         None,
         &[],
-        &mut session,
+        &mut *session,
         &index_notes,
     ).map_err(|e| e.to_string())?;
 
@@ -578,7 +579,7 @@ async fn seed_demo_data(state: State<'_, AppState>) -> Result<(), String> {
         "# Architecture: USearch Vector Index\nWe use the USearch library (HNSW graph) to perform high-speed similarity searches locally on standard consumer computers, mapping embeddings using SSD-backed files.",
         None,
         &[],
-        &mut session,
+        &mut *session,
         &index_notes,
     ).map_err(|e| e.to_string())?;
 
@@ -589,7 +590,7 @@ async fn seed_demo_data(state: State<'_, AppState>) -> Result<(), String> {
         "# Performance Bottleneck: High Capacity HNSW Rebuilding\nWhen the memory-mapped vector index reaches 100k vectors, memory constraints start causing significant page faults on lower-end devices. We need to implement vector quantization.",
         None,
         &[],
-        &mut session,
+        &mut *session,
         &index_notes,
     ).map_err(|e| e.to_string())?;
 
@@ -614,7 +615,7 @@ async fn seed_demo_data(state: State<'_, AppState>) -> Result<(), String> {
         &contact_alice,
         None,
         &[],
-        &mut session,
+        &mut *session,
         &index_contacts,
     )
     .map_err(|e| e.to_string())?;
@@ -636,7 +637,7 @@ async fn seed_demo_data(state: State<'_, AppState>) -> Result<(), String> {
         &contact_bob,
         None,
         &[],
-        &mut session,
+        &mut *session,
         &index_contacts,
     )
     .map_err(|e| e.to_string())?;
@@ -663,7 +664,7 @@ async fn seed_demo_data(state: State<'_, AppState>) -> Result<(), String> {
         &event_launch,
         None,
         &[],
-        &mut session,
+        &mut *session,
         &index_calendar,
     )
     .map_err(|e| e.to_string())?;
@@ -684,7 +685,7 @@ async fn seed_demo_data(state: State<'_, AppState>) -> Result<(), String> {
         "# Performance Bottleneck: Quantization Fix Applied\nWe implemented int8 vector quantization, which successfully resolved page faulting and reduced index RAM usage from 2.5GB to 550MB on target devices.",
         None,
         &[],
-        &mut session,
+        &mut *session,
         &index_notes,
     ).map_err(|e| e.to_string())?;
 
@@ -743,6 +744,10 @@ pub fn run() {
         .setup(move |app| {
             let vibe_path = resolve_workspace_path();
 
+            let session = crate::model::init_model()
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+            let shared_session = std::sync::Arc::new(std::sync::Mutex::new(session));
+
             // Build system tray with Quit option
             let quit_i = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
             let menu = MenuBuilder::new(app).item(&quit_i).build()?;
@@ -788,22 +793,18 @@ pub fn run() {
                 let shared_path = std::sync::Arc::new(std::sync::Mutex::new(vibe_path.clone()));
                 app.manage(AppState {
                     vibe_path: shared_path.clone(),
+                    model_session: shared_session.clone(),
                 });
 
                 // Spawn stdio loop background thread
                 let vibe_path_cloned = vibe_path.clone();
+                let mcp_session = shared_session.clone();
                 std::thread::spawn(move || {
                     let stdin = std::io::stdin();
                     let mut stdout = std::io::stdout();
                     use std::io::BufRead;
 
-                    let mut session = match crate::model::init_model() {
-                        Ok(s) => s,
-                        Err(e) => {
-                            eprintln!("Failed to initialize ONNX model: {}", e);
-                            return;
-                        }
-                    };
+                    let mut session = mcp_session.lock().unwrap();
 
                     let db_path = vibe_path_cloned.join("vibe.db");
                     let mut conn = match crate::db::init_db(&db_path) {
@@ -868,6 +869,7 @@ pub fn run() {
                 let shared_path = std::sync::Arc::new(std::sync::Mutex::new(vibe_path.clone()));
                 app.manage(AppState {
                     vibe_path: shared_path.clone(),
+                    model_session: shared_session.clone(),
                 });
 
                 // Spawn background SSE server passing Arc<Mutex> path

@@ -54,6 +54,25 @@ interface Toast {
 }
 
 function App() {
+  // Theme state
+  const [theme, setTheme] = useState<"dark" | "light">(() => {
+    const saved = localStorage.getItem("theme");
+    if (saved === "dark" || saved === "light") return saved;
+    if (window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches) {
+      return "light";
+    }
+    return "dark";
+  });
+
+  const toggleTheme = () => {
+    setTheme((prev) => (prev === "dark" ? "light" : "dark"));
+  };
+
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", theme);
+    localStorage.setItem("theme", theme);
+  }, [theme]);
+
   // State variables
   const [collections, setCollections] = useState<Collection[]>([]);
   const [graphData, setGraphData] = useState<GraphData>({ nodes: [], edges: [], history_edges: [] });
@@ -1104,7 +1123,7 @@ function App() {
       ctx.translate(panRef.current.x, panRef.current.y);
       ctx.scale(zoomRef.current, zoomRef.current);
 
-      // --- 1. Draw Edges ---
+       // --- 1. Draw Edges ---
       graphData.edges.forEach((edge) => {
         const sourceNode = nodes.find((n) => n.id === edge.source);
         const targetNode = nodes.find((n) => n.id === edge.target);
@@ -1113,7 +1132,7 @@ function App() {
         ctx.beginPath();
         ctx.moveTo(sourceNode.x || 0, sourceNode.y || 0);
         ctx.lineTo(targetNode.x || 0, targetNode.y || 0);
-        ctx.strokeStyle = "rgba(157, 78, 221, 0.4)";
+        ctx.strokeStyle = theme === "light" ? "rgba(123, 44, 191, 0.35)" : "rgba(157, 78, 221, 0.4)";
         ctx.lineWidth = selectedNode && (selectedNode.id === sourceNode.id || selectedNode.id === targetNode.id) ? 3 : 1.5;
         ctx.stroke();
 
@@ -1121,7 +1140,7 @@ function App() {
           const midX = ((sourceNode.x || 0) + (targetNode.x || 0)) / 2;
           const midY = ((sourceNode.y || 0) + (targetNode.y || 0)) / 2;
           ctx.font = "9px Inter";
-          ctx.fillStyle = "rgba(148, 163, 184, 0.7)";
+          ctx.fillStyle = theme === "light" ? "rgba(71, 85, 105, 0.75)" : "rgba(148, 163, 184, 0.7)";
           ctx.textAlign = "center";
           ctx.fillText(edge.type, midX, midY - 4);
         }
@@ -1136,7 +1155,7 @@ function App() {
         ctx.setLineDash([4, 4]);
         ctx.moveTo(parentNode.x || 0, parentNode.y || 0);
         ctx.lineTo(childNode.x || 0, childNode.y || 0);
-        ctx.strokeStyle = "rgba(148, 163, 184, 0.35)";
+        ctx.strokeStyle = theme === "light" ? "rgba(148, 163, 184, 0.5)" : "rgba(148, 163, 184, 0.35)";
         ctx.lineWidth = 1.5;
         ctx.stroke();
         ctx.setLineDash([]); // Reset line dash
@@ -1164,7 +1183,7 @@ function App() {
               targetY - 8 * Math.sin(angle + Math.PI / 6)
             );
             ctx.closePath();
-            ctx.fillStyle = "rgba(148, 163, 184, 0.4)";
+            ctx.fillStyle = theme === "light" ? "rgba(148, 163, 184, 0.55)" : "rgba(148, 163, 184, 0.4)";
             ctx.fill();
           }
         }
@@ -1178,19 +1197,19 @@ function App() {
         const isHovered = idx === hoveredNodeIndex.current;
         const isSelected = selectedNode && selectedNode.id === n.id;
         
-        let accent = "#9d4edd";
-        let accentGlow = "rgba(157, 78, 221, 0.25)";
+        let accent = theme === "light" ? "#7b2cbf" : "#9d4edd";
+        let accentGlow = theme === "light" ? "rgba(123, 44, 191, 0.2)" : "rgba(157, 78, 221, 0.25)";
         let letter = "N";
         
         const col = collections.find((c) => c.id === n.collection_id);
         if (col) {
           if (col.type === "contacts") {
-            accent = "#00f5d4";
-            accentGlow = "rgba(0, 245, 212, 0.25)";
+            accent = theme === "light" ? "#00b4d8" : "#00f5d4";
+            accentGlow = theme === "light" ? "rgba(0, 180, 216, 0.2)" : "rgba(0, 245, 212, 0.25)";
             letter = "C";
           } else if (col.type === "calendar") {
-            accent = "#ff9f1c";
-            accentGlow = "rgba(255, 159, 28, 0.25)";
+            accent = theme === "light" ? "#f77f00" : "#ff9f1c";
+            accentGlow = theme === "light" ? "rgba(247, 127, 0, 0.2)" : "rgba(255, 159, 28, 0.25)";
             letter = "E";
           }
         }
@@ -1206,23 +1225,23 @@ function App() {
         ctx.arc(x, y, radius, 0, Math.PI * 2);
         
         if (!n.is_active) {
-          ctx.fillStyle = "rgba(20, 22, 33, 0.6)";
+          ctx.fillStyle = theme === "light" ? "rgba(241, 245, 249, 0.6)" : "rgba(20, 22, 33, 0.6)";
           ctx.fill();
-          ctx.strokeStyle = "rgba(100, 116, 139, 0.5)";
+          ctx.strokeStyle = theme === "light" ? "rgba(148, 163, 184, 0.5)" : "rgba(100, 116, 139, 0.5)";
           ctx.setLineDash([3, 3]);
           ctx.lineWidth = 1.5;
           ctx.stroke();
           ctx.setLineDash([]);
         } else {
-          ctx.fillStyle = "rgba(17, 19, 28, 0.95)";
+          ctx.fillStyle = theme === "light" ? "rgba(255, 255, 255, 0.95)" : "rgba(17, 19, 28, 0.95)";
           ctx.fill();
-          ctx.strokeStyle = isSelected ? "#fff" : accent;
+          ctx.strokeStyle = isSelected ? (theme === "light" ? "#0f172a" : "#fff") : accent;
           ctx.lineWidth = isSelected ? 3.0 : 1.8;
           ctx.stroke();
         }
 
         ctx.font = "bold 12px Inter";
-        ctx.fillStyle = !n.is_active ? "rgba(100, 116, 139, 0.6)" : accent;
+        ctx.fillStyle = !n.is_active ? (theme === "light" ? "rgba(148, 163, 184, 0.7)" : "rgba(100, 116, 139, 0.6)") : accent;
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
         ctx.fillText(letter, x, y);
@@ -1230,10 +1249,10 @@ function App() {
         if (zoomRef.current > 0.45 || isHovered || isSelected) {
           ctx.font = isSelected ? "bold 11px Inter" : "10px Inter";
           ctx.fillStyle = isSelected 
-            ? "#ffffff" 
+            ? (theme === "light" ? "#0f172a" : "#ffffff") 
             : !n.is_active 
-              ? "rgba(100, 116, 139, 0.6)" 
-              : "rgba(241, 243, 249, 0.95)";
+              ? (theme === "light" ? "rgba(148, 163, 184, 0.7)" : "rgba(100, 116, 139, 0.6)") 
+              : (theme === "light" ? "rgba(15, 23, 42, 0.95)" : "rgba(241, 243, 249, 0.95)");
           ctx.textAlign = "center";
           ctx.textBaseline = "top";
           
@@ -1262,7 +1281,7 @@ function App() {
         cancelAnimationFrame(animationFrameId.current);
       }
     };
-  }, [graphData, selectedNode, collections]);
+  }, [graphData, selectedNode, collections, theme]);
 
   // Interactive mouse canvas triggers
   const getMousePos = (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -1636,12 +1655,39 @@ function App() {
       {/* LEFT SIDEBAR: Forms and collection list */}
       <aside className="glass-panel left-sidebar">
         <header className="panel-header">
-          <h2>
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-              <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
-            </svg>
-            vibeNote
-          </h2>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <h2>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+              </svg>
+              vibeNote
+            </h2>
+            <button 
+              id="theme-toggle-btn"
+              className="btn-icon" 
+              title={theme === "dark" ? "Switch to Light Mode" : "Switch to Dark Mode"} 
+              onClick={toggleTheme} 
+              style={{ padding: "6px", display: "inline-flex", alignItems: "center" }}
+            >
+              {theme === "dark" ? (
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="5"></circle>
+                  <line x1="12" y1="1" x2="12" y2="3"></line>
+                  <line x1="12" y1="21" x2="12" y2="23"></line>
+                  <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
+                  <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+                  <line x1="1" y1="12" x2="3" y2="12"></line>
+                  <line x1="21" y1="12" x2="23" y2="12"></line>
+                  <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
+                  <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
+                </svg>
+              ) : (
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+                </svg>
+              )}
+            </button>
+          </div>
           <p>Local PKM Semantic Engine {isWebMode && " (Web Demo)"}</p>
 
           {activeVibePath && (
