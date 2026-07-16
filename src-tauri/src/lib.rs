@@ -791,6 +791,12 @@ pub fn run() {
     let is_mcp = std::env::args().any(|arg| arg == "--mcp");
 
     let app = tauri::Builder::default()
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
+            }
+        })
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             greet,
@@ -831,9 +837,14 @@ pub fn run() {
             }
             let shared_conn = std::sync::Arc::new(std::sync::Mutex::new(conn));
 
-            // Build system tray with Quit option
+            // Build system tray with Show and Quit options
+            let show_i = MenuItemBuilder::with_id("show", "Show vibeNote").build(app)?;
             let quit_i = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
-            let menu = MenuBuilder::new(app).item(&quit_i).build()?;
+            let menu = MenuBuilder::new(app)
+                .item(&show_i)
+                .separator()
+                .item(&quit_i)
+                .build()?;
 
             let icon = app.default_window_icon().cloned().unwrap_or_else(|| {
                 let bytes = include_bytes!("../icons/32x32.png");
@@ -843,10 +854,31 @@ pub fn run() {
             let _tray = TrayIconBuilder::new()
                 .icon(icon)
                 .menu(&menu)
-                .on_menu_event(|app, event| {
-                    if event.id().as_ref() == "quit" {
+                .on_menu_event(|app, event| match event.id().as_ref() {
+                    "show" => {
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                    }
+                    "quit" => {
                         app.cleanup_before_exit();
                         std::process::exit(0);
+                    }
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let tauri::tray::TrayIconEvent::Click {
+                        button: tauri::tray::MouseButton::Left,
+                        button_state: tauri::tray::MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        let app = tray.app_handle();
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
                     }
                 })
                 .build(app)?;
@@ -931,9 +963,7 @@ pub fn run() {
 
     app.run(move |_app_handle, event| {
         if let tauri::RunEvent::ExitRequested { api, .. } = event {
-            if is_mcp {
-                api.prevent_exit();
-            }
+            api.prevent_exit();
         }
     });
 }
