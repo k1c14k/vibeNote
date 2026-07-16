@@ -268,7 +268,7 @@ async fn create_piece(
             &content,
             None,
             &[],
-            &mut *session,
+            &mut session,
             &index,
         )
         .map_err(|e| e.to_string())?;
@@ -283,7 +283,7 @@ async fn create_piece(
             &contact,
             None,
             &[],
-            &mut *session,
+            &mut session,
             &index,
         )
         .map_err(|e| e.to_string())?;
@@ -298,7 +298,7 @@ async fn create_piece(
             &event,
             None,
             &[],
-            &mut *session,
+            &mut session,
             &index,
         )
         .map_err(|e| e.to_string())?;
@@ -342,7 +342,7 @@ async fn replace_piece(
             &content,
             None,
             &[],
-            &mut *session,
+            &mut session,
             &index,
         )
         .map_err(|e| e.to_string())?;
@@ -381,7 +381,7 @@ async fn replace_piece(
             &vcard,
             None,
             &metadata,
-            &mut *session,
+            &mut session,
             &index,
         )
         .map_err(|e| e.to_string())?;
@@ -420,7 +420,7 @@ async fn replace_piece(
             &ics,
             None,
             &metadata,
-            &mut *session,
+            &mut session,
             &index,
         )
         .map_err(|e| e.to_string())?;
@@ -491,7 +491,7 @@ async fn search_vibe(
     };
 
     let vector_results =
-        crate::vector_index::query_pieces(&conn, &vibe_path, &mut *session, &query, options)
+        crate::vector_index::query_pieces(&conn, &vibe_path, &mut session, &query, options)
             .map_err(|e| format!("Semantic search failed: {}", e))?;
 
     let mut details = Vec::new();
@@ -568,7 +568,7 @@ async fn seed_demo_data(state: State<'_, AppState>) -> Result<(), String> {
         "# Project Alpha Core Vision\nProject Alpha aims to build a fully local-first, privacy-respecting desktop database. It stores items as atomic, immutable Pieces and structures them dynamically with an association graph.",
         None,
         &[],
-        &mut *session,
+        &mut session,
         &index_notes,
     ).map_err(|e| e.to_string())?;
 
@@ -579,7 +579,7 @@ async fn seed_demo_data(state: State<'_, AppState>) -> Result<(), String> {
         "# Architecture: USearch Vector Index\nWe use the USearch library (HNSW graph) to perform high-speed similarity searches locally on standard consumer computers, mapping embeddings using SSD-backed files.",
         None,
         &[],
-        &mut *session,
+        &mut session,
         &index_notes,
     ).map_err(|e| e.to_string())?;
 
@@ -590,7 +590,7 @@ async fn seed_demo_data(state: State<'_, AppState>) -> Result<(), String> {
         "# Performance Bottleneck: High Capacity HNSW Rebuilding\nWhen the memory-mapped vector index reaches 100k vectors, memory constraints start causing significant page faults on lower-end devices. We need to implement vector quantization.",
         None,
         &[],
-        &mut *session,
+        &mut session,
         &index_notes,
     ).map_err(|e| e.to_string())?;
 
@@ -615,7 +615,7 @@ async fn seed_demo_data(state: State<'_, AppState>) -> Result<(), String> {
         &contact_alice,
         None,
         &[],
-        &mut *session,
+        &mut session,
         &index_contacts,
     )
     .map_err(|e| e.to_string())?;
@@ -637,7 +637,7 @@ async fn seed_demo_data(state: State<'_, AppState>) -> Result<(), String> {
         &contact_bob,
         None,
         &[],
-        &mut *session,
+        &mut session,
         &index_contacts,
     )
     .map_err(|e| e.to_string())?;
@@ -664,7 +664,7 @@ async fn seed_demo_data(state: State<'_, AppState>) -> Result<(), String> {
         &event_launch,
         None,
         &[],
-        &mut *session,
+        &mut session,
         &index_calendar,
     )
     .map_err(|e| e.to_string())?;
@@ -685,7 +685,7 @@ async fn seed_demo_data(state: State<'_, AppState>) -> Result<(), String> {
         "# Performance Bottleneck: Quantization Fix Applied\nWe implemented int8 vector quantization, which successfully resolved page faulting and reduced index RAM usage from 2.5GB to 550MB on target devices.",
         None,
         &[],
-        &mut *session,
+        &mut session,
         &index_notes,
     ).map_err(|e| e.to_string())?;
 
