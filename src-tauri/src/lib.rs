@@ -27,6 +27,7 @@ pub struct AppState {
             std::collections::HashMap<String, std::sync::Arc<crate::vector_index::VectorIndex>>,
         >,
     >,
+    pub sse_port: std::sync::Arc<std::sync::atomic::AtomicU16>,
 }
 
 fn get_config_file_path() -> PathBuf {
@@ -786,6 +787,69 @@ async fn add_collection(
 
     Ok(json!(collection))
 }
+#[derive(serde::Serialize)]
+struct McpConfigInfo {
+    sse_port: u16,
+    exe_path: String,
+}
+
+#[derive(serde::Serialize)]
+struct McpToolInfo {
+    name: String,
+    description: String,
+}
+
+#[tauri::command]
+fn get_mcp_config(state: State<'_, AppState>) -> McpConfigInfo {
+    let sse_port = state.sse_port.load(std::sync::atomic::Ordering::SeqCst);
+    let exe_path = std::env::current_exe()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "vibenote".to_string());
+    McpConfigInfo { sse_port, exe_path }
+}
+
+#[tauri::command]
+fn get_mcp_tools() -> Vec<McpToolInfo> {
+    vec![
+        McpToolInfo {
+            name: "search_vibe".to_string(),
+            description: "Runs a semantic search query across all active pieces in the current Vibe.".to_string(),
+        },
+        McpToolInfo {
+            name: "search_collection".to_string(),
+            description: "Runs a semantic search query restricted to a specific collection.".to_string(),
+        },
+        McpToolInfo {
+            name: "create_piece".to_string(),
+            description: "Creates a new piece in a collection (supports text, contacts, calendar).".to_string(),
+        },
+        McpToolInfo {
+            name: "get_piece_details".to_string(),
+            description: "Retrieves a specific piece, its full metadata, history, relations, and raw file content.".to_string(),
+        },
+        McpToolInfo {
+            name: "link_pieces".to_string(),
+            description: "Explicitly creates a typed semantic relationship between two pieces.".to_string(),
+        },
+        McpToolInfo {
+            name: "get_relations_graph".to_string(),
+            description: "Returns the local network of related pieces (nodes and edges).".to_string(),
+        },
+        McpToolInfo {
+            name: "list_collections".to_string(),
+            description: "Lists all collections in the current Vibe workspace.".to_string(),
+        },
+        McpToolInfo {
+            name: "set_metadata".to_string(),
+            description: "Sets/updates a metadata key-value pair for a piece.".to_string(),
+        },
+        McpToolInfo {
+            name: "delete_metadata".to_string(),
+            description: "Deletes a metadata key from a piece.".to_string(),
+        },
+    ]
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let is_mcp = std::env::args().any(|arg| arg == "--mcp");
@@ -812,7 +876,9 @@ pub fn run() {
             link_pieces,
             seed_demo_data,
             search_vibe,
-            add_collection
+            add_collection,
+            get_mcp_config,
+            get_mcp_tools
         ])
         .setup(move |app| {
             let vibe_path = resolve_workspace_path();
@@ -888,11 +954,13 @@ pub fn run() {
                 let shared_path = std::sync::Arc::new(std::sync::Mutex::new(vibe_path.clone()));
                 let shared_cache =
                     std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+                let shared_sse_port = std::sync::Arc::new(std::sync::atomic::AtomicU16::new(3001));
                 app.manage(AppState {
                     vibe_path: shared_path.clone(),
                     model_session: shared_session.clone(),
                     db_conn: shared_conn.clone(),
                     index_cache: shared_cache.clone(),
+                    sse_port: shared_sse_port,
                 });
 
                 // Spawn stdio loop background thread
@@ -926,21 +994,27 @@ pub fn run() {
                 let shared_path = std::sync::Arc::new(std::sync::Mutex::new(vibe_path.clone()));
                 let shared_cache =
                     std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+                let shared_sse_port = std::sync::Arc::new(std::sync::atomic::AtomicU16::new(3001));
                 app.manage(AppState {
                     vibe_path: shared_path.clone(),
                     model_session: shared_session.clone(),
                     db_conn: shared_conn.clone(),
                     index_cache: shared_cache.clone(),
+                    sse_port: shared_sse_port.clone(),
                 });
 
                 // Spawn background SSE server passing Arc<Mutex> path and connection
                 let vibe_path_cloned = shared_path.clone();
                 let db_conn_cloned = shared_conn.clone();
                 let cache_cloned = shared_cache.clone();
+                let sse_port_cloned = shared_sse_port.clone();
                 std::thread::spawn(move || {
-                    if let Err(e) =
-                        crate::sse::start_sse_server(vibe_path_cloned, db_conn_cloned, cache_cloned)
-                    {
+                    if let Err(e) = crate::sse::start_sse_server(
+                        vibe_path_cloned,
+                        db_conn_cloned,
+                        cache_cloned,
+                        sse_port_cloned,
+                    ) {
                         eprintln!("Failed to start SSE server: {}", e);
                     }
                 });

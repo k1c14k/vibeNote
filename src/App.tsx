@@ -9,6 +9,7 @@ import { InspectorPanel } from "./components/InspectorPanel";
 import { ListView } from "./components/ListView";
 import { ContactsGrid } from "./components/ContactsGrid";
 import { CalendarWeekView } from "./components/CalendarWeekView";
+import { McpConfigPopup } from "./components/McpConfigPopup";
 import { Collection, GraphNode, GraphEdge, HistoryEdge, GraphData, Toast } from "./types";
 
 function App() {
@@ -79,6 +80,9 @@ function App() {
 
   // Collapsible navigation column state
   const [isNavCollapsed, setIsNavCollapsed] = useState<boolean>(false);
+
+  // MCP configuration popup state
+  const [showMcpPopup, setShowMcpPopup] = useState<boolean>(false);
 
   // Viewport offset/scale state
   const [zoom, setZoom] = useState(1.0);
@@ -713,6 +717,7 @@ function App() {
         selectedNode={selectedNode}
         centerOnNode={centerOnNode}
         addToast={addToast}
+        onOpenMcpPopup={() => setShowMcpPopup(true)}
       />
 
       {/* COLLECTION NAVIGATION COLUMN */}
@@ -907,6 +912,13 @@ function App() {
           />
         </div>
       </aside>
+
+      {showMcpPopup && (
+        <McpConfigPopup
+          onClose={() => setShowMcpPopup(false)}
+          addToast={addToast}
+        />
+      )}
 
     </div>
   );

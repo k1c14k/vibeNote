@@ -1661,6 +1661,227 @@ textarea.form-control {
   }
 }
 
+/* ==========================================================================
+   MCP Configuration Popup Styles
+   ========================================================================== */
+.mcp-config-modal {
+  max-width: 680px;
+  width: 90%;
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.mcp-modal-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.mcp-intro-text {
+  font-size: 0.92rem;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  margin: 0;
+}
+
+.mcp-connection-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--border-color);
+  padding: 14px 18px;
+  border-radius: 10px;
+}
+
+:root[data-theme="light"] .mcp-connection-row {
+  background: rgba(15, 23, 42, 0.01);
+}
+
+.mcp-row-label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.mcp-url-box {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.mcp-url-box code {
+  font-family: var(--font-mono);
+  font-size: 0.95rem;
+  color: var(--accent-purple);
+  background: transparent;
+  padding: 0;
+  word-break: break-all;
+}
+
+.mcp-config-tabs {
+  display: flex;
+  border-bottom: 1px solid var(--border-color);
+  gap: 4px;
+  overflow-x: auto;
+  padding-bottom: 1px;
+}
+
+.mcp-tab-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-family: var(--font-display);
+  font-size: 0.85rem;
+  font-weight: 600;
+  padding: 10px 16px;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+}
+
+.mcp-tab-btn:hover {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+:root[data-theme="light"] .mcp-tab-btn:hover {
+  background: rgba(15, 23, 42, 0.02);
+}
+
+.mcp-tab-btn.active {
+  color: var(--accent-purple);
+  border-bottom-color: var(--accent-purple);
+}
+
+.mcp-tab-content {
+  background: var(--bg-panel);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  padding: 20px;
+  box-shadow: var(--shadow-sm);
+}
+
+.mcp-preset-box {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.mcp-preset-desc {
+  font-size: 0.88rem;
+  color: var(--text-secondary);
+  margin: 0;
+  line-height: 1.45;
+}
+
+.mcp-preset-box pre {
+  margin: 0;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 8px;
+  padding: 14px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+:root[data-theme="light"] .mcp-preset-box pre {
+  background: rgba(15, 23, 42, 0.03);
+  border-color: rgba(15, 23, 42, 0.06);
+}
+
+.mcp-preset-box code {
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  line-height: 1.4;
+  color: var(--text-primary);
+  background: transparent;
+  padding: 0;
+}
+
+.mcp-preset-box button.btn-primary {
+  align-self: flex-start;
+  font-size: 0.85rem;
+  padding: 8px 16px;
+}
+
+.mcp-preset-box ul {
+  margin: 0;
+  padding-left: 20px;
+  font-size: 0.88rem;
+  color: var(--text-secondary);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.mcp-preset-box li code {
+  color: var(--accent-purple);
+  background: rgba(255, 255, 255, 0.03);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.mcp-tools-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  border-top: 1px solid var(--border-color);
+  padding-top: 16px;
+}
+
+.mcp-tools-section h4 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.mcp-tools-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+.mcp-tool-card {
+  background: rgba(255, 255, 255, 0.015);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+:root[data-theme="light"] .mcp-tool-card {
+  background: rgba(15, 23, 42, 0.005);
+}
+
+.mcp-tool-card strong code {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  color: var(--accent-purple);
+  background: transparent;
+  padding: 0;
+}
+
+.mcp-tool-card p {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  line-height: 1.35;
+}
+
+
 
 
 

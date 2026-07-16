@@ -19,14 +19,49 @@ pub fn start_sse_server(
             std::collections::HashMap<String, std::sync::Arc<crate::vector_index::VectorIndex>>,
         >,
     >,
+    sse_port: std::sync::Arc<std::sync::atomic::AtomicU16>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let port = std::env::var("VIBENOTE_SSE_PORT")
+    let base_port: u16 = std::env::var("VIBENOTE_SSE_PORT")
         .or_else(|_| std::env::var("PORT"))
-        .unwrap_or_else(|_| "3001".to_string());
+        .ok()
+        .and_then(|val| val.parse().ok())
+        .unwrap_or(3001);
 
-    let addr = format!("127.0.0.1:{}", port);
-    let server = Arc::new(tiny_http::Server::http(&addr).map_err(std::io::Error::other)?);
-    println!("SSE server listening on http://{}", addr);
+    let mut server_opt = None;
+    for offset in 0..10 {
+        let p = base_port + offset;
+        let addr = format!("127.0.0.1:{}", p);
+        match tiny_http::Server::http(&addr) {
+            Ok(server) => {
+                server_opt = Some((server, p));
+                break;
+            }
+            Err(e) => {
+                eprintln!(
+                    "Warning: Failed to bind to port {}, trying next fallback: {:?}",
+                    p, e
+                );
+            }
+        }
+    }
+
+    let (server, bound_port) = match server_opt {
+        Some(s) => s,
+        None => {
+            println!("Warning: All base ports failed. Binding to OS-assigned random port.");
+            let server = tiny_http::Server::http("127.0.0.1:0")
+                .map_err(|e| std::io::Error::other(e.to_string()))?;
+            let port = match server.server_addr() {
+                tiny_http::ListenAddr::IP(addr) => addr.port(),
+                _ => 0,
+            };
+            (server, port)
+        }
+    };
+
+    println!("SSE server listening on http://127.0.0.1:{}", bound_port);
+    sse_port.store(bound_port, std::sync::atomic::Ordering::SeqCst);
+    let server = Arc::new(server);
 
     let model_session = Arc::new(Mutex::new(crate::model::init_model()?));
 
