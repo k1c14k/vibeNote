@@ -7,11 +7,14 @@ description: Instructions and workflow for staging, committing, referencing, and
 
 This skill outlines the process for finalizing an issue implementation, ensuring code quality, and committing/pushing the changes with the correct GitHub closing hooks.
 
-## Step 1: Pre-Commit Verification
-1. Run local build checks to verify that the frontend and backend both compile without errors:
-   - For backend: `cargo check` (set `PKG_CONFIG_PATH` if on Linux to compile GTK/Pango system hooks: `PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig cargo check`)
+## Step 1: Pre-Commit Verification & Formatting
+1. Reformat the code to ensure formatting checks will pass in the CI workflow:
+   - For backend: `cargo fmt --manifest-path src-tauri/Cargo.toml`
+2. Run local build checks and linters to verify that the frontend and backend both compile without errors:
+   - For backend: `cargo check` and `cargo clippy` (set `PKG_CONFIG_PATH` if on Linux to compile GTK/Pango system hooks: `PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig cargo check`)
    - For frontend: `npm run build`
-2. Run any unit/integration tests to ensure no regressions are introduced.
+3. Run any unit/integration tests to ensure no regressions are introduced:
+   - For backend: `cargo test`
 
 ## Step 2: Git Status & Exclusions Check
 1. Run `git status` to see what files are staged, modified, or untracked.
@@ -29,8 +32,13 @@ This skill outlines the process for finalizing an issue implementation, ensuring
    Closes #<issue_number>
    ```
 
-## Step 4: Push to Remote
-1. Push the commit to the active branch (e.g. `main`):
+## Step 4: Push to Remote & Create Pull Request
+1. Push the commit to the remote feature branch (never push directly to `main` as it is a protected branch):
    ```bash
-   git push
+   git push -u origin <branch_name>
    ```
+2. Create a pull request (PR) on GitHub using the GitHub CLI:
+   ```bash
+   gh pr create --title "<Meaningful title describing the work done>" --body "<Detailed pull request description including Closes #<issue_number>>"
+   ```
+3. Share the created PR link with the user for review.

@@ -7,12 +7,22 @@ description: Instructions and workflow for retrieving, analyzing, planning, and 
 
 This skill outlines the standard workflow for developers and coding agents to follow when working on a GitHub issue in this repository.
 
-## Step 1: Retrieve Issue Details
-1. Try to read the issue details locally using the GitHub CLI:
+## Step 1: Branch Setup & Retrieve Issue Details
+1. Update the local `main` branch to match the remote repository:
+   ```bash
+   git checkout main
+   git pull origin main
+   ```
+2. Ask the user if you should continue working on the current branch or create a new feature branch from `main`.
+   - If creating a new branch, checkout a clean feature branch:
+     ```bash
+     git checkout -b feature/issue-<issue_number>-<short-description>
+     ```
+3. Read the issue details locally using the GitHub CLI:
    ```bash
    gh issue view <issue_number>
    ```
-2. If `gh` is not installed or authenticated, fetch the issue details from the GitHub API using `curl`:
+4. If `gh` is not installed or authenticated, fetch the issue details from the GitHub API using `curl`:
    ```bash
    curl -s -H "User-Agent: vibeNote-agent" https://api.github.com/repos/k1c14k/vibeNote/issues/<issue_number>
    ```
