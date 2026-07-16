@@ -20,6 +20,7 @@ use tauri::{
 
 pub struct AppState {
     pub vibe_path: std::sync::Arc<std::sync::Mutex<PathBuf>>,
+    pub model_session: std::sync::Arc<std::sync::Mutex<ort::session::Session>>,
 }
 
 fn get_config_file_path() -> PathBuf {
@@ -246,7 +247,7 @@ async fn create_piece(
     let mut conn = Connection::open(vibe_path.join("vibe.db"))
         .map_err(|e| format!("Failed to open DB: {}", e))?;
 
-    let mut session = crate::model::init_model().map_err(|e| e.to_string())?;
+    let mut session = state.model_session.lock().unwrap();
 
     let folder_path: String = conn
         .query_row(
@@ -317,7 +318,7 @@ async fn replace_piece(
     let mut conn = Connection::open(vibe_path.join("vibe.db"))
         .map_err(|e| format!("Failed to open DB: {}", e))?;
 
-    let mut session = crate::model::init_model().map_err(|e| e.to_string())?;
+    let mut session = state.model_session.lock().unwrap();
 
     let (_collection_id, folder_path, col_type): (String, String, String) = conn
         .query_row(
@@ -482,7 +483,7 @@ async fn search_vibe(
     let conn = Connection::open(vibe_path.join("vibe.db"))
         .map_err(|e| format!("Failed to open DB: {}", e))?;
 
-    let mut session = crate::model::init_model().map_err(|e| e.to_string())?;
+    let mut session = state.model_session.lock().unwrap();
 
     let options = crate::vector_index::QueryOptions {
         collection_id,
@@ -512,7 +513,7 @@ async fn seed_demo_data(state: State<'_, AppState>) -> Result<(), String> {
     let mut conn = Connection::open(vibe_path.join("vibe.db"))
         .map_err(|e| format!("Failed to open DB: {}", e))?;
 
-    let mut session = crate::model::init_model().map_err(|e| e.to_string())?;
+    let mut session = state.model_session.lock().unwrap();
 
     // Create collections if they don't exist
     let notes_col_id: String = conn
@@ -743,6 +744,10 @@ pub fn run() {
         .setup(move |app| {
             let vibe_path = resolve_workspace_path();
 
+            let session = crate::model::init_model()
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+            let shared_session = std::sync::Arc::new(std::sync::Mutex::new(session));
+
             // Build system tray with Quit option
             let quit_i = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
             let menu = MenuBuilder::new(app).item(&quit_i).build()?;
@@ -788,22 +793,18 @@ pub fn run() {
                 let shared_path = std::sync::Arc::new(std::sync::Mutex::new(vibe_path.clone()));
                 app.manage(AppState {
                     vibe_path: shared_path.clone(),
+                    model_session: shared_session.clone(),
                 });
 
                 // Spawn stdio loop background thread
                 let vibe_path_cloned = vibe_path.clone();
+                let mcp_session = shared_session.clone();
                 std::thread::spawn(move || {
                     let stdin = std::io::stdin();
                     let mut stdout = std::io::stdout();
                     use std::io::BufRead;
 
-                    let mut session = match crate::model::init_model() {
-                        Ok(s) => s,
-                        Err(e) => {
-                            eprintln!("Failed to initialize ONNX model: {}", e);
-                            return;
-                        }
-                    };
+                    let mut session = mcp_session.lock().unwrap();
 
                     let db_path = vibe_path_cloned.join("vibe.db");
                     let mut conn = match crate::db::init_db(&db_path) {
@@ -868,6 +869,7 @@ pub fn run() {
                 let shared_path = std::sync::Arc::new(std::sync::Mutex::new(vibe_path.clone()));
                 app.manage(AppState {
                     vibe_path: shared_path.clone(),
+                    model_session: shared_session.clone(),
                 });
 
                 // Spawn background SSE server passing Arc<Mutex> path

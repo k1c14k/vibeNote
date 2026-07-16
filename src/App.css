@@ -23,6 +23,53 @@
   --glass-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
   --font-display: 'Outfit', 'Inter', system-ui, -apple-system, sans-serif;
   --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+
+  /* Theme adaptive custom variables */
+  --scrollbar-thumb: rgba(255, 255, 255, 0.1);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.2);
+  --grid-dot-color: rgba(255, 255, 255, 0.03);
+  --bg-secondary-opaque: rgba(16, 18, 27, 0.75);
+  --bg-secondary-opaque-darker: rgba(16, 18, 27, 0.6);
+  --shadow-sm: 0 4px 12px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 4px 20px rgba(0, 0, 0, 0.3);
+  --shadow-lg: 0 20px 50px rgba(0, 0, 0, 0.6), 0 0 40px rgba(124, 58, 237, 0.1);
+  --btn-icon-hover-bg: rgba(255, 255, 255, 0.05);
+  --primary-glow: #a78bfa;
+}
+
+:root[data-theme="light"] {
+  --bg-primary: #f8fafc;
+  --bg-secondary: #f1f5f9;
+  --bg-panel: rgba(255, 255, 255, 0.7);
+  --border-color: rgba(15, 23, 42, 0.08);
+  --border-hover: rgba(15, 23, 42, 0.16);
+  
+  --text-primary: #0f172a;
+  --text-secondary: #475569;
+  --text-muted: #64748b;
+  
+  /* Themed accents */
+  --accent-purple: #7b2cbf;
+  --accent-purple-glow: rgba(123, 44, 191, 0.12);
+  --accent-teal: #00b4d8;
+  --accent-teal-glow: rgba(0, 180, 216, 0.12);
+  --accent-orange: #f77f00;
+  --accent-orange-glow: rgba(247, 127, 0, 0.12);
+  --accent-red: #d90429;
+  --accent-gray: #94a3b8;
+  
+  --glass-shadow: 0 8px 32px 0 rgba(15, 23, 42, 0.08);
+  
+  --scrollbar-thumb: rgba(15, 23, 42, 0.1);
+  --scrollbar-thumb-hover: rgba(15, 23, 42, 0.2);
+  --grid-dot-color: rgba(15, 23, 42, 0.05);
+  --bg-secondary-opaque: rgba(241, 245, 249, 0.85);
+  --bg-secondary-opaque-darker: rgba(241, 245, 249, 0.75);
+  --shadow-sm: 0 4px 12px rgba(15, 23, 42, 0.05);
+  --shadow-md: 0 4px 20px rgba(15, 23, 42, 0.06);
+  --shadow-lg: 0 20px 50px rgba(15, 23, 42, 0.08), 0 0 40px rgba(124, 58, 237, 0.05);
+  --btn-icon-hover-bg: rgba(15, 23, 42, 0.05);
+  --primary-glow: #7b2cbf;
 }
 
 * {
@@ -50,19 +97,18 @@ body {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--scrollbar-thumb);
   border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.2);
+  background: var(--scrollbar-thumb-hover);
 }
 
-/* Dashboard Layout */
 .dashboard-root {
   display: flex;
   height: 100vh;
   width: 100vw;
-  background-radial-gradient: radial-gradient(circle at 50% 50%, var(--bg-secondary) 0%, var(--bg-primary) 100%);
+  background: radial-gradient(circle at 50% 50%, var(--bg-secondary) 0%, var(--bg-primary) 100%);
   position: relative;
 }
 
@@ -142,7 +188,7 @@ body {
   height: 100%;
   overflow: hidden;
   background-image: 
-    radial-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+    radial-gradient(var(--grid-dot-color) 1px, transparent 1px);
   background-size: 24px 24px;
 }
 
@@ -164,7 +210,7 @@ body {
   left: 20px;
   right: 20px;
   height: 56px;
-  background: rgba(16, 18, 27, 0.75);
+  background: var(--bg-secondary-opaque);
   backdrop-filter: blur(12px);
   border: 1px solid var(--border-color);
   border-radius: 12px;
@@ -173,7 +219,7 @@ body {
   justify-content: space-between;
   padding: 0 16px;
   z-index: 5;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+  box-shadow: var(--shadow-md);
 }
 
 .search-container {
@@ -369,7 +415,7 @@ textarea.form-control {
   position: absolute;
   bottom: 20px;
   left: 20px;
-  background: rgba(16, 18, 27, 0.75);
+  background: var(--bg-secondary-opaque);
   backdrop-filter: blur(12px);
   border: 1px solid var(--border-color);
   border-radius: 8px;
@@ -379,7 +425,7 @@ textarea.form-control {
   gap: 8px;
   z-index: 5;
   font-size: 0.75rem;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+  box-shadow: var(--shadow-sm);
 }
 
 .legend-item {
@@ -561,7 +607,7 @@ textarea.form-control {
   left: 0;
   width: 100vw;
   height: 100vh;
-  background: rgba(8, 9, 14, 0.85);
+  background: var(--bg-overlay, rgba(8, 9, 14, 0.85));
   backdrop-filter: blur(20px);
   display: flex;
   justify-content: center;
@@ -574,10 +620,10 @@ textarea.form-control {
   width: 90%;
   padding: 36px;
   text-align: center;
-  background: rgba(16, 18, 27, 0.75);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: var(--bg-secondary-opaque);
+  border: 1px solid var(--border-color);
   border-radius: 16px;
-  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.6), 0 0 40px rgba(124, 58, 237, 0.1);
+  box-shadow: var(--shadow-lg);
   display: flex;
   flex-direction: column;
   gap: 24px;
@@ -675,7 +721,7 @@ textarea.form-control {
 
 .btn-icon:hover {
   color: var(--primary-glow);
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--btn-icon-hover-bg);
 }
 
 .animate-scale-up {
@@ -795,7 +841,7 @@ textarea.form-control {
 }
 
 .calendar-icon-badge .day {
-  background: rgba(16, 18, 27, 0.6);
+  background: var(--bg-secondary-opaque-darker);
   color: var(--text-primary);
   font-size: 1.15rem;
   font-weight: 800;
