@@ -157,21 +157,26 @@ pub fn ingest_calendar_piece(
         // Add to memory index
         crate::vector_index::add_vector(index, vector_id, &embedding)?;
 
-        // Save index to disk
-        crate::vector_index::save_index(index, vibe_path, &folder_path)?;
-
         tx.commit()?;
         Ok(created_at)
     };
 
     match run_tx_sequence(conn, &mut vector_id_opt).map_err(CalendarError::Piece) {
-        Ok(created_at) => Ok(Piece {
-            id: piece_id,
-            collection_id: collection_id.to_string(),
-            uri: uri.map(String::from),
-            created_at,
-            is_active: true,
-        }),
+        Ok(created_at) => {
+            if let Err(e) = crate::vector_index::save_index(index, vibe_path, &folder_path) {
+                eprintln!(
+                    "Warning: Failed to save USearch index to disk after SQLite commit: {:?}",
+                    e
+                );
+            }
+            Ok(Piece {
+                id: piece_id,
+                collection_id: collection_id.to_string(),
+                uri: uri.map(String::from),
+                created_at,
+                is_active: true,
+            })
+        }
         Err(err) => {
             // Cleanup disk file on failure
             let _ = std::fs::remove_file(&piece_file_path);

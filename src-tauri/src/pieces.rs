@@ -132,21 +132,26 @@ pub fn ingest_text_piece(
         // Add to memory index
         crate::vector_index::add_vector(index, vector_id, &embedding)?;
 
-        // Save index to disk
-        crate::vector_index::save_index(index, vibe_path, &folder_path)?;
-
         tx.commit()?;
         Ok(created_at)
     };
 
     match run_tx_sequence(conn, &mut vector_id_opt) {
-        Ok(created_at) => Ok(Piece {
-            id: piece_id,
-            collection_id: collection_id.to_string(),
-            uri: uri.map(String::from),
-            created_at,
-            is_active: true,
-        }),
+        Ok(created_at) => {
+            if let Err(e) = crate::vector_index::save_index(index, vibe_path, &folder_path) {
+                eprintln!(
+                    "Warning: Failed to save USearch index to disk after SQLite commit: {:?}",
+                    e
+                );
+            }
+            Ok(Piece {
+                id: piece_id,
+                collection_id: collection_id.to_string(),
+                uri: uri.map(String::from),
+                created_at,
+                is_active: true,
+            })
+        }
         Err(err) => {
             // Rollback disk file on database write failure
             let _ = std::fs::remove_file(&piece_file_path);
@@ -267,21 +272,26 @@ pub fn replace_piece(
         let embedding = crate::model::generate_embedding(session, content)?;
         crate::vector_index::add_vector(index, new_vector_id, &embedding)?;
 
-        // Save index
-        crate::vector_index::save_index(index, vibe_path, &folder_path)?;
-
         tx.commit()?;
         Ok(created_at)
     };
 
     match run_tx_sequence(conn, &mut new_vector_id_opt) {
-        Ok(created_at) => Ok(Piece {
-            id: new_piece_id,
-            collection_id,
-            uri: uri.map(String::from),
-            created_at,
-            is_active: true,
-        }),
+        Ok(created_at) => {
+            if let Err(e) = crate::vector_index::save_index(index, vibe_path, &folder_path) {
+                eprintln!(
+                    "Warning: Failed to save USearch index to disk after SQLite commit: {:?}",
+                    e
+                );
+            }
+            Ok(Piece {
+                id: new_piece_id,
+                collection_id,
+                uri: uri.map(String::from),
+                created_at,
+                is_active: true,
+            })
+        }
         Err(err) => {
             // Rollback disk file
             let _ = std::fs::remove_file(&piece_file_path);
@@ -387,21 +397,26 @@ pub fn extend_piece(
         let embedding = crate::model::generate_embedding(session, content)?;
         crate::vector_index::add_vector(index, vector_id, &embedding)?;
 
-        // Save index
-        crate::vector_index::save_index(index, vibe_path, &folder_path)?;
-
         tx.commit()?;
         Ok(created_at)
     };
 
     match run_tx_sequence(conn, &mut vector_id_opt) {
-        Ok(created_at) => Ok(Piece {
-            id: new_piece_id,
-            collection_id,
-            uri: uri.map(String::from),
-            created_at,
-            is_active: true,
-        }),
+        Ok(created_at) => {
+            if let Err(e) = crate::vector_index::save_index(index, vibe_path, &folder_path) {
+                eprintln!(
+                    "Warning: Failed to save USearch index to disk after SQLite commit: {:?}",
+                    e
+                );
+            }
+            Ok(Piece {
+                id: new_piece_id,
+                collection_id,
+                uri: uri.map(String::from),
+                created_at,
+                is_active: true,
+            })
+        }
         Err(err) => {
             // Rollback disk file
             let _ = std::fs::remove_file(&piece_file_path);
@@ -444,28 +459,48 @@ pub fn tombstone_piece(
         })?;
 
     // 2. Perform DB update and vector removal within transaction
-    let tx = conn.transaction()?;
+    let run_tx_sequence = |conn: &mut Connection| -> Result<(), PieceError> {
+        let tx = conn.transaction()?;
 
-    // Tombstone in SQLite
-    tx.execute("UPDATE pieces SET is_active = 0 WHERE id = ?;", [piece_id])?;
+        // Tombstone in SQLite
+        tx.execute("UPDATE pieces SET is_active = 0 WHERE id = ?;", [piece_id])?;
 
-    // Retrieve vector ID mapping
-    let vector_id = crate::vector_index::get_or_create_vector_id(&tx, piece_id)?;
+        // Retrieve vector ID mapping
+        let vector_id = crate::vector_index::get_or_create_vector_id(&tx, piece_id)?;
 
-    // Remove from index
-    index.remove(vector_id).map_err(|e| {
-        PieceError::VectorIndex(crate::vector_index::VectorIndexError::USearch(format!(
-            "{:?}",
-            e
-        )))
-    })?;
+        // Remove from index
+        index.remove(vector_id).map_err(|e| {
+            PieceError::VectorIndex(crate::vector_index::VectorIndexError::USearch(format!(
+                "{:?}",
+                e
+            )))
+        })?;
 
-    // Save index
-    crate::vector_index::save_index(index, vibe_path, &folder_path)?;
+        tx.commit()?;
+        Ok(())
+    };
 
-    tx.commit()?;
-
-    Ok(())
+    match run_tx_sequence(conn) {
+        Ok(()) => {
+            if let Err(e) = crate::vector_index::save_index(index, vibe_path, &folder_path) {
+                eprintln!(
+                    "Warning: Failed to save USearch index to disk after SQLite commit: {:?}",
+                    e
+                );
+            }
+            Ok(())
+        }
+        Err(err) => {
+            // Revert memory index
+            let usearch_path = vibe_path.join(format!("{}.usearch", folder_path));
+            if usearch_path.exists() {
+                if let Some(path_str) = usearch_path.to_str() {
+                    let _ = index.load(path_str);
+                }
+            }
+            Err(err)
+        }
+    }
 }
 
 /// Creates an explicit semantic connection between two pieces in SQLite.
