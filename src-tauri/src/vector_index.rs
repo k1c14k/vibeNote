@@ -49,6 +49,35 @@ pub fn load_or_create_index(vibe_path: &Path, index_name: &str) -> Result<Index,
     Ok(index)
 }
 
+pub struct VectorIndex(pub Index);
+
+unsafe impl Send for VectorIndex {}
+unsafe impl Sync for VectorIndex {}
+
+impl std::ops::Deref for VectorIndex {
+    type Target = Index;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+/// Returns the cached index for `index_name`, loading or creating it if not cached.
+pub fn get_or_create_index(
+    vibe_path: &Path,
+    index_name: &str,
+    cache: &std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<VectorIndex>>>,
+) -> Result<std::sync::Arc<VectorIndex>, VectorIndexError> {
+    let mut lock = cache.lock().unwrap();
+    if let Some(index) = lock.get(index_name) {
+        Ok(index.clone())
+    } else {
+        let index = load_or_create_index(vibe_path, index_name)?;
+        let wrapped = std::sync::Arc::new(VectorIndex(index));
+        lock.insert(index_name.to_string(), wrapped.clone());
+        Ok(wrapped)
+    }
+}
+
 /// Saves the index to `<vibe_path>/<index_name>.usearch`.
 pub fn save_index(
     index: &Index,
@@ -152,6 +181,7 @@ pub fn query_pieces(
     session: &mut ort::session::Session,
     query_text: &str,
     options: QueryOptions,
+    index_cache: &std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<VectorIndex>>>,
 ) -> Result<Vec<QueryResult>, VectorIndexError> {
     // 1. Generate query embedding
     let embedding = crate::model::generate_embedding(session, query_text)
@@ -175,7 +205,7 @@ pub fn query_pieces(
             None => return Ok(vec![]),
         };
 
-        let index = load_or_create_index(vibe_path, &folder_path)?;
+        let index = get_or_create_index(vibe_path, &folder_path, index_cache)?;
         let search_results = index
             .search(&embedding, options.top_k)
             .map_err(|e| VectorIndexError::USearch(format!("{:?}", e)))?;
@@ -199,7 +229,7 @@ pub fn query_pieces(
         for folder_path in folder_paths {
             let usearch_path = vibe_path.join(format!("{}.usearch", folder_path));
             if usearch_path.exists() {
-                let index = load_or_create_index(vibe_path, &folder_path)?;
+                let index = get_or_create_index(vibe_path, &folder_path, index_cache)?;
                 let search_results = index
                     .search(&embedding, options.top_k)
                     .map_err(|e| VectorIndexError::USearch(format!("{:?}", e)))?;
@@ -495,6 +525,7 @@ mod tests {
                 top_k: 3,
                 ..Default::default()
             },
+            &std::sync::Mutex::new(std::collections::HashMap::new()),
         )
         .unwrap();
 
@@ -560,6 +591,7 @@ mod tests {
                 top_k: 10,
                 ..Default::default()
             },
+            &std::sync::Mutex::new(std::collections::HashMap::new()),
         )
         .unwrap();
 
@@ -602,6 +634,7 @@ mod tests {
                 top_k: 5,
                 ..Default::default()
             },
+            &std::sync::Mutex::new(std::collections::HashMap::new()),
         )
         .unwrap();
 
@@ -621,6 +654,7 @@ mod tests {
             &mut env.session,
             "anything",
             QueryOptions::default(),
+            &std::sync::Mutex::new(std::collections::HashMap::new()),
         )
         .unwrap();
 
@@ -672,6 +706,7 @@ mod tests {
                 top_k: 10,
                 ..Default::default()
             },
+            &std::sync::Mutex::new(std::collections::HashMap::new()),
         )
         .unwrap();
 

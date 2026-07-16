@@ -6,6 +6,9 @@ import { Sidebar } from "./components/Sidebar";
 import { CollectionNav } from "./components/CollectionNav";
 import { GraphCanvas } from "./components/GraphCanvas";
 import { InspectorPanel } from "./components/InspectorPanel";
+import { ListView } from "./components/ListView";
+import { ContactsGrid } from "./components/ContactsGrid";
+import { CalendarWeekView } from "./components/CalendarWeekView";
 import { Collection, GraphNode, GraphEdge, HistoryEdge, GraphData, Toast } from "./types";
 
 function App() {
@@ -33,6 +36,14 @@ function App() {
   const [graphData, setGraphData] = useState<GraphData>({ nodes: [], edges: [], history_edges: [] });
   const [selectedCollectionId, setSelectedCollectionId] = useState<string>("");
   const [selectedBrowseCollectionId, setSelectedBrowseCollectionId] = useState<string>("");
+  const [activeMainTab, setActiveMainTab] = useState<"graph" | "specific">("graph");
+
+  // Automatically switch tab when browse collection changes
+  useEffect(() => {
+    if (!selectedBrowseCollectionId) {
+      setActiveMainTab("graph");
+    }
+  }, [selectedBrowseCollectionId]);
 
   // Collection creation state
   const [showAddCollectionOverlay, setShowAddCollectionOverlay] = useState(false);
@@ -717,8 +728,32 @@ function App() {
 
       {/* CENTER WORKSPACE: Interactive 2D Graph Visualizer */}
       <section className="workspace-center">
+        {/* Collection view selector tabs */}
+        {selectedBrowseCollectionId && (
+          <div className="main-tab-bar">
+            <button
+              className={`tab-btn ${activeMainTab === "graph" ? "active" : ""}`}
+              onClick={() => setActiveMainTab("graph")}
+            >
+              🌐 Graph View
+            </button>
+            <button
+              className={`tab-btn ${activeMainTab === "specific" ? "active" : ""}`}
+              onClick={() => setActiveMainTab("specific")}
+            >
+              {(() => {
+                const col = collections.find(c => c.id === selectedBrowseCollectionId);
+                if (col?.type === "text") return "📝 List View";
+                if (col?.type === "contacts") return "👤 Contacts Grid";
+                if (col?.type === "calendar") return "📅 Week Schedule";
+                return "🗂️ Specific View";
+              })()}
+            </button>
+          </div>
+        )}
+
         {/* Floating Top Header Options */}
-        <div className="top-controls-bar">
+        <div className="top-controls-bar" style={{ display: activeMainTab === "graph" ? "flex" : "none" }}>
           <div className="search-container">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ color: "var(--text-muted)" }}>
               <circle cx="11" cy="11" r="8"></circle>
@@ -750,7 +785,7 @@ function App() {
         </div>
 
         {/* Legend */}
-        <div className="graph-legend">
+        <div className="graph-legend" style={{ display: activeMainTab === "graph" ? "flex" : "none" }}>
           <div className="legend-item">
             <div className="legend-dot text"></div>
             <span>Plain Notes (Markdown)</span>
@@ -778,26 +813,70 @@ function App() {
             </button>
           </div>
         ) : (
-          <GraphCanvas
-            graphData={graphData}
-            collections={collections}
-            theme={theme}
-            selectedNode={selectedNode}
-            setSelectedNode={setSelectedNode}
-            searchQuery={searchQuery}
-            showHistory={showHistory}
-            selectedBrowseCollectionId={selectedBrowseCollectionId}
-            sourceNodeId={sourceNodeId}
-            setSourceNodeId={setSourceNodeId}
-            targetNodeId={targetNodeId}
-            setTargetNodeId={setTargetNodeId}
-            zoom={zoom}
-            setZoom={setZoom}
-            pan={pan}
-            setPan={setPan}
-            nodeIdToCenter={nodeIdToCenter}
-            setNodeIdToCenter={setNodeIdToCenter}
-          />
+          <>
+            <div style={{ display: activeMainTab === "graph" ? "block" : "none", height: "100%", width: "100%" }}>
+              <GraphCanvas
+                graphData={graphData}
+                collections={collections}
+                theme={theme}
+                selectedNode={selectedNode}
+                setSelectedNode={setSelectedNode}
+                searchQuery={searchQuery}
+                showHistory={showHistory}
+                selectedBrowseCollectionId={selectedBrowseCollectionId}
+                sourceNodeId={sourceNodeId}
+                setSourceNodeId={setSourceNodeId}
+                targetNodeId={targetNodeId}
+                setTargetNodeId={setTargetNodeId}
+                zoom={zoom}
+                setZoom={setZoom}
+                pan={pan}
+                setPan={setPan}
+                nodeIdToCenter={nodeIdToCenter}
+                setNodeIdToCenter={setNodeIdToCenter}
+              />
+            </div>
+
+            {activeMainTab === "specific" && (
+              <div className="type-specific-view-container" style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column", width: "100%" }}>
+                {(() => {
+                  const col = collections.find(c => c.id === selectedBrowseCollectionId);
+                  const filteredNodes = graphData.nodes.filter(n => n.collection_id === selectedBrowseCollectionId);
+                  if (col?.type === "text") {
+                    return (
+                      <ListView
+                        nodes={filteredNodes}
+                        selectedNode={selectedNode}
+                        setSelectedNode={setSelectedNode}
+                        searchQuery={searchQuery}
+                      />
+                    );
+                  }
+                  if (col?.type === "contacts") {
+                    return (
+                      <ContactsGrid
+                        nodes={filteredNodes}
+                        selectedNode={selectedNode}
+                        setSelectedNode={setSelectedNode}
+                        searchQuery={searchQuery}
+                      />
+                    );
+                  }
+                  if (col?.type === "calendar") {
+                    return (
+                      <CalendarWeekView
+                        nodes={filteredNodes}
+                        selectedNode={selectedNode}
+                        setSelectedNode={setSelectedNode}
+                        searchQuery={searchQuery}
+                      />
+                    );
+                  }
+                  return null;
+                })()}
+              </div>
+            )}
+          </>
         )}
       </section>
 

@@ -14,6 +14,11 @@ fn get_sessions() -> &'static Mutex<HashMap<String, Sender<Vec<u8>>>> {
 pub fn start_sse_server(
     vibe_path: std::sync::Arc<std::sync::Mutex<std::path::PathBuf>>,
     db_conn: std::sync::Arc<std::sync::Mutex<Connection>>,
+    index_cache: std::sync::Arc<
+        std::sync::Mutex<
+            std::collections::HashMap<String, std::sync::Arc<crate::vector_index::VectorIndex>>,
+        >,
+    >,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let port = std::env::var("VIBENOTE_SSE_PORT")
         .or_else(|_| std::env::var("PORT"))
@@ -28,12 +33,17 @@ pub fn start_sse_server(
     for request in server.incoming_requests() {
         let vibe_path_cloned = vibe_path.clone();
         let session_cloned = model_session.clone();
+        let cache_cloned = index_cache.clone();
 
         let db_conn_cloned = db_conn.clone();
         std::thread::spawn(move || {
-            if let Err(e) =
-                handle_request(request, vibe_path_cloned, db_conn_cloned, session_cloned)
-            {
+            if let Err(e) = handle_request(
+                request,
+                vibe_path_cloned,
+                db_conn_cloned,
+                session_cloned,
+                cache_cloned,
+            ) {
                 eprintln!("Error handling HTTP request: {}", e);
             }
         });
@@ -47,6 +57,11 @@ fn handle_request(
     vibe_path: std::sync::Arc<std::sync::Mutex<std::path::PathBuf>>,
     db_conn: std::sync::Arc<std::sync::Mutex<Connection>>,
     model_session: Arc<Mutex<ort::session::Session>>,
+    index_cache: std::sync::Arc<
+        std::sync::Mutex<
+            std::collections::HashMap<String, std::sync::Arc<crate::vector_index::VectorIndex>>,
+        >,
+    >,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // 1. Handle CORS preflight OPTIONS request
     if request.method() == &tiny_http::Method::Options {
@@ -190,7 +205,13 @@ fn handle_request(
             // Route through core handle_mcp_message logic
             let response = {
                 let mut session_guard = model_session.lock().unwrap();
-                crate::mcp::handle_mcp_message(&active_path, &mut conn, &mut session_guard, &body)
+                crate::mcp::handle_mcp_message(
+                    &active_path,
+                    &mut conn,
+                    &mut session_guard,
+                    &body,
+                    &index_cache,
+                )
             };
 
             // Format as standard MCP SSE event and send to connection thread channel
