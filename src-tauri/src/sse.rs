@@ -1,3 +1,4 @@
+use rusqlite::Connection;
 use std::collections::HashMap;
 use std::io::Write;
 use std::sync::mpsc::Sender;
@@ -12,6 +13,7 @@ fn get_sessions() -> &'static Mutex<HashMap<String, Sender<Vec<u8>>>> {
 /// Spawns a local Server-Sent Events HTTP server inside the Tauri backend.
 pub fn start_sse_server(
     vibe_path: std::sync::Arc<std::sync::Mutex<std::path::PathBuf>>,
+    db_conn: std::sync::Arc<std::sync::Mutex<Connection>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let port = std::env::var("VIBENOTE_SSE_PORT")
         .or_else(|_| std::env::var("PORT"))
@@ -27,8 +29,11 @@ pub fn start_sse_server(
         let vibe_path_cloned = vibe_path.clone();
         let session_cloned = model_session.clone();
 
+        let db_conn_cloned = db_conn.clone();
         std::thread::spawn(move || {
-            if let Err(e) = handle_request(request, vibe_path_cloned, session_cloned) {
+            if let Err(e) =
+                handle_request(request, vibe_path_cloned, db_conn_cloned, session_cloned)
+            {
                 eprintln!("Error handling HTTP request: {}", e);
             }
         });
@@ -40,6 +45,7 @@ pub fn start_sse_server(
 fn handle_request(
     mut request: tiny_http::Request,
     vibe_path: std::sync::Arc<std::sync::Mutex<std::path::PathBuf>>,
+    db_conn: std::sync::Arc<std::sync::Mutex<Connection>>,
     model_session: Arc<Mutex<ort::session::Session>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // 1. Handle CORS preflight OPTIONS request
@@ -179,8 +185,7 @@ fn handle_request(
             request.as_reader().read_to_string(&mut body)?;
 
             let active_path = vibe_path.lock().unwrap().clone();
-            let db_path = active_path.join("vibe.db");
-            let mut conn = crate::db::init_db(&db_path)?;
+            let mut conn = db_conn.lock().unwrap();
 
             // Route through core handle_mcp_message logic
             let response = {
