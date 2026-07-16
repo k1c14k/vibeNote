@@ -77,6 +77,67 @@ function App() {
   const [collections, setCollections] = useState<Collection[]>([]);
   const [graphData, setGraphData] = useState<GraphData>({ nodes: [], edges: [], history_edges: [] });
   const [selectedCollectionId, setSelectedCollectionId] = useState<string>("");
+
+  // Collection creation state
+  const [showAddCollectionOverlay, setShowAddCollectionOverlay] = useState(false);
+  const [newColName, setNewColName] = useState("");
+  const [newColType, setNewColType] = useState<"text" | "contacts" | "calendar">("text");
+  const [newColFolder, setNewColFolder] = useState("");
+  const [isFolderCustomized, setIsFolderCustomized] = useState(false);
+
+  const slugify = (text: string) => {
+    return text
+      .toString()
+      .toLowerCase()
+      .trim()
+      .replace(/\s+/g, '-')           // Replace spaces with -
+      .replace(/[^\w\-]+/g, '')       // Remove all non-word chars
+      .replace(/\-\-+/g, '-');        // Replace multiple - with single -
+  };
+
+  const handleNameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = e.target.value;
+    setNewColName(val);
+    if (!isFolderCustomized) {
+      setNewColFolder(slugify(val));
+    }
+  };
+
+  const resetAddCollectionForm = () => {
+    setNewColName("");
+    setNewColType("text");
+    setNewColFolder("");
+    setIsFolderCustomized(false);
+  };
+
+  const handleAddCollection = async () => {
+    if (!newColName.trim()) {
+      addToast("Collection name cannot be empty", "error");
+      return;
+    }
+    if (!newColFolder.trim()) {
+      addToast("Folder name cannot be empty", "error");
+      return;
+    }
+    try {
+      const newCol = await invoke<Collection>("add_collection", {
+        name: newColName,
+        collectionType: newColType,
+        folderName: newColFolder,
+      });
+      addToast(`Collection "${newCol.name}" created successfully!`, "success");
+      setShowAddCollectionOverlay(false);
+      resetAddCollectionForm();
+      
+      // Refresh list
+      const result = await invoke<Collection[]>("get_collections");
+      setCollections(result);
+      setActiveTab(newColType);
+      setSelectedCollectionId(newCol.id);
+    } catch (e) {
+      addToast(String(e), "error");
+    }
+  };
   
   // Filters
   const [searchQuery, setSearchQuery] = useState<string>("");
@@ -1652,6 +1713,72 @@ function App() {
         </div>
       )}
 
+      {/* Add Collection Overlay */}
+      {showAddCollectionOverlay && (
+        <div className="workspace-overlay" style={{ zIndex: 300 }}>
+          <div className="glass-panel workspace-modal animate-scale-up" style={{ maxWidth: "420px" }}>
+            <header className="workspace-header">
+              <h1>New Collection</h1>
+              <p className="subtitle">Create a flat directory collection</p>
+            </header>
+            <div className="workspace-body" style={{ textAlign: "left", width: "100%", display: "flex", flexDirection: "column", gap: "16px" }}>
+              <div className="form-group" style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                <label style={{ fontSize: "0.85rem", fontWeight: 600, color: "var(--text-secondary)" }}>Collection Name</label>
+                <input 
+                  type="text" 
+                  className="search-input" 
+                  value={newColName} 
+                  onChange={handleNameChange} 
+                  placeholder="e.g. Work Notes, My Clients" 
+                  style={{ width: "100%" }}
+                />
+              </div>
+
+              <div className="form-group" style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                <label style={{ fontSize: "0.85rem", fontWeight: 600, color: "var(--text-secondary)" }}>Collection Type</label>
+                <select 
+                  className="search-input" 
+                  value={newColType} 
+                  onChange={(e) => setNewColType(e.target.value as any)}
+                  style={{ width: "100%", padding: "8px" }}
+                >
+                  <option value="text">Notes (Plain Text / Markdown)</option>
+                  <option value="contacts">Contacts (vCard / Contacts)</option>
+                  <option value="calendar">Calendar (iCalendar / Event)</option>
+                </select>
+              </div>
+
+              <div className="form-group" style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                <label style={{ fontSize: "0.85rem", fontWeight: 600, color: "var(--text-secondary)" }}>Folder Name</label>
+                <input 
+                  type="text" 
+                  className="search-input" 
+                  value={newColFolder} 
+                  onChange={(e) => {
+                    setNewColFolder(e.target.value);
+                    setIsFolderCustomized(true);
+                  }} 
+                  placeholder="e.g. work-notes" 
+                  style={{ width: "100%" }}
+                />
+              </div>
+
+              <div className="actions-group" style={{ display: "flex", gap: "12px", marginTop: "12px" }}>
+                <button className="btn btn-primary" style={{ flex: 1 }} onClick={handleAddCollection}>
+                  Create
+                </button>
+                <button className="btn btn-secondary" style={{ flex: 1 }} onClick={() => {
+                  setShowAddCollectionOverlay(false);
+                  resetAddCollectionForm();
+                }}>
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* LEFT SIDEBAR: Forms and collection list */}
       <aside className="glass-panel left-sidebar">
         <header className="panel-header">
@@ -1739,6 +1866,9 @@ function App() {
                     </div>
                   ))
                 )}
+                <button className="btn btn-primary btn-block" style={{ marginTop: "10px" }} onClick={() => setShowAddCollectionOverlay(true)}>
+                  + New Collection
+                </button>
                 <button className="btn btn-secondary btn-block" style={{ marginTop: "10px" }} onClick={handleSeedData}>
                   Seed Demo Knowledge Base
                 </button>
