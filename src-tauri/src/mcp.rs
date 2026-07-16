@@ -116,6 +116,9 @@ pub fn handle_mcp_message(
     conn: &mut Connection,
     session: &mut ort::session::Session,
     message_str: &str,
+    index_cache: &std::sync::Mutex<
+        std::collections::HashMap<String, std::sync::Arc<crate::vector_index::VectorIndex>>,
+    >,
 ) -> String {
     let req: JsonRpcRequest = match serde_json::from_str(message_str) {
         Ok(parsed) => parsed,
@@ -158,9 +161,13 @@ pub fn handle_mcp_message(
             return "".to_string();
         }
         "tools/list" => handle_tools_list(),
-        "tools/call" => {
-            handle_tools_call(vibe_path, conn, session, req.params.unwrap_or(Value::Null))
-        }
+        "tools/call" => handle_tools_call(
+            vibe_path,
+            conn,
+            session,
+            req.params.unwrap_or(Value::Null),
+            index_cache,
+        ),
         "ping" => Ok(json!({})),
         _ => Err((-32601, format!("Method not found: {}", req.method))),
     };
@@ -379,6 +386,9 @@ fn handle_tools_call(
     conn: &mut Connection,
     session: &mut ort::session::Session,
     params: Value,
+    index_cache: &std::sync::Mutex<
+        std::collections::HashMap<String, std::sync::Arc<crate::vector_index::VectorIndex>>,
+    >,
 ) -> Result<Value, (i64, String)> {
     let name = params
         .get("name")
@@ -388,9 +398,11 @@ fn handle_tools_call(
     let arguments = params.get("arguments").cloned().unwrap_or(Value::Null);
 
     let res = match name {
-        "search_vibe" => call_search_vibe(vibe_path, conn, session, arguments),
-        "search_collection" => call_search_collection(vibe_path, conn, session, arguments),
-        "create_piece" => call_create_piece(vibe_path, conn, session, arguments),
+        "search_vibe" => call_search_vibe(vibe_path, conn, session, arguments, index_cache),
+        "search_collection" => {
+            call_search_collection(vibe_path, conn, session, arguments, index_cache)
+        }
+        "create_piece" => call_create_piece(vibe_path, conn, session, arguments, index_cache),
         "get_piece_details" => call_get_piece_details(vibe_path, conn, arguments),
         "link_pieces" => call_link_pieces(conn, arguments),
         "get_relations_graph" => call_get_relations_graph(vibe_path, conn, arguments),
@@ -427,6 +439,9 @@ fn call_search_vibe(
     conn: &Connection,
     session: &mut ort::session::Session,
     args: Value,
+    index_cache: &std::sync::Mutex<
+        std::collections::HashMap<String, std::sync::Arc<crate::vector_index::VectorIndex>>,
+    >,
 ) -> Result<Value, String> {
     let query = args
         .get("query")
@@ -441,7 +456,7 @@ fn call_search_vibe(
     };
 
     let vector_results =
-        crate::vector_index::query_pieces(conn, vibe_path, session, query, options)
+        crate::vector_index::query_pieces(conn, vibe_path, session, query, options, index_cache)
             .map_err(|e| format!("Semantic search failed: {}", e))?;
 
     let mut details = Vec::new();
@@ -462,6 +477,9 @@ fn call_search_collection(
     conn: &Connection,
     session: &mut ort::session::Session,
     args: Value,
+    index_cache: &std::sync::Mutex<
+        std::collections::HashMap<String, std::sync::Arc<crate::vector_index::VectorIndex>>,
+    >,
 ) -> Result<Value, String> {
     let query = args
         .get("query")
@@ -481,7 +499,7 @@ fn call_search_collection(
     };
 
     let vector_results =
-        crate::vector_index::query_pieces(conn, vibe_path, session, query, options)
+        crate::vector_index::query_pieces(conn, vibe_path, session, query, options, index_cache)
             .map_err(|e| format!("Semantic search failed: {}", e))?;
 
     let mut details = Vec::new();
@@ -502,6 +520,9 @@ fn call_create_piece(
     conn: &mut Connection,
     session: &mut ort::session::Session,
     args: Value,
+    index_cache: &std::sync::Mutex<
+        std::collections::HashMap<String, std::sync::Arc<crate::vector_index::VectorIndex>>,
+    >,
 ) -> Result<Value, String> {
     let content = args
         .get("content")
@@ -525,7 +546,7 @@ fn call_create_piece(
     let (folder_path, col_type) = col_row;
 
     // Load vector index for the collection
-    let index = crate::vector_index::load_or_create_index(vibe_path, &folder_path)
+    let index = crate::vector_index::get_or_create_index(vibe_path, &folder_path, index_cache)
         .map_err(|e| format!("Failed to load vector index: {}", e))?;
 
     // Parse metadata if present
@@ -940,6 +961,7 @@ mod tests {
             &mut env.conn,
             &mut env.session,
             &serde_json::to_string(&msg).unwrap(),
+            &std::sync::Mutex::new(std::collections::HashMap::new()),
         );
         let res: JsonRpcResponse = serde_json::from_str(&response_str).unwrap();
 
@@ -969,6 +991,7 @@ mod tests {
             &mut env.conn,
             &mut env.session,
             &serde_json::to_string(&msg).unwrap(),
+            &std::sync::Mutex::new(std::collections::HashMap::new()),
         );
         let res: JsonRpcResponse = serde_json::from_str(&response_str).unwrap();
 
@@ -1024,6 +1047,7 @@ mod tests {
             &mut env.conn,
             &mut env.session,
             &serde_json::to_string(&create_msg).unwrap(),
+            &std::sync::Mutex::new(std::collections::HashMap::new()),
         );
         let res: JsonRpcResponse = serde_json::from_str(&response_str).unwrap();
 
@@ -1061,6 +1085,7 @@ mod tests {
             &mut env.conn,
             &mut env.session,
             &serde_json::to_string(&set_meta_msg).unwrap(),
+            &std::sync::Mutex::new(std::collections::HashMap::new()),
         );
 
         // Check if value updated in DB
@@ -1092,6 +1117,7 @@ mod tests {
             &mut env.conn,
             &mut env.session,
             &serde_json::to_string(&del_meta_msg).unwrap(),
+            &std::sync::Mutex::new(std::collections::HashMap::new()),
         );
 
         let exists: bool = env.conn.query_row(
@@ -1149,6 +1175,7 @@ mod tests {
             &mut env.conn,
             &mut env.session,
             &serde_json::to_string(&create_msg).unwrap(),
+            &std::sync::Mutex::new(std::collections::HashMap::new()),
         );
         let res: JsonRpcResponse = serde_json::from_str(&response_str).unwrap();
         let tools_call_res = res.result.unwrap();
@@ -1202,6 +1229,7 @@ mod tests {
             &mut env.conn,
             &mut env.session,
             &serde_json::to_string(&details_msg).unwrap(),
+            &std::sync::Mutex::new(std::collections::HashMap::new()),
         );
         let details_res: JsonRpcResponse = serde_json::from_str(&details_resp_str).unwrap();
         let details_call_res = details_res.result.unwrap();

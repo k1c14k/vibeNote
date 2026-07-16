@@ -22,6 +22,11 @@ pub struct AppState {
     pub vibe_path: std::sync::Arc<std::sync::Mutex<PathBuf>>,
     pub model_session: std::sync::Arc<std::sync::Mutex<ort::session::Session>>,
     pub db_conn: std::sync::Arc<std::sync::Mutex<Connection>>,
+    pub index_cache: std::sync::Arc<
+        std::sync::Mutex<
+            std::collections::HashMap<String, std::sync::Arc<crate::vector_index::VectorIndex>>,
+        >,
+    >,
 }
 
 fn get_config_file_path() -> PathBuf {
@@ -96,6 +101,8 @@ async fn change_vibe_directory(state: State<'_, AppState>, path: String) -> Resu
     if count == 0 {
         let _ = crate::collections::create_collection(&conn, &new_path, "Notes", "text", "notes");
     }
+
+    state.index_cache.lock().unwrap().clear();
 
     *state.vibe_path.lock().unwrap() = new_path.clone();
     *state.db_conn.lock().unwrap() = conn;
@@ -252,8 +259,9 @@ async fn create_piece(
         )
         .map_err(|e| format!("Collection not found: {}", e))?;
 
-    let index = crate::vector_index::load_or_create_index(&vibe_path, &folder_path)
-        .map_err(|e| e.to_string())?;
+    let index =
+        crate::vector_index::get_or_create_index(&vibe_path, &folder_path, &state.index_cache)
+            .map_err(|e| e.to_string())?;
 
     if piece_type == "text" {
         let piece = crate::pieces::ingest_text_piece(
@@ -271,13 +279,35 @@ async fn create_piece(
     } else if piece_type == "contacts" {
         let contact: crate::contacts::ContactJson =
             serde_json::from_str(&content).map_err(|e| format!("Invalid contact JSON: {}", e))?;
+        let mut metadata = vec![("formatted_name", contact.formatted_name.as_str())];
+        let email_str;
+        if let Some(ref email) = contact.email {
+            email_str = email.clone();
+            metadata.push(("email", &email_str));
+        }
+        let phone_str;
+        if let Some(ref phone) = contact.phone {
+            phone_str = phone.clone();
+            metadata.push(("phone", &phone_str));
+        }
+        let org_str;
+        if let Some(ref org) = contact.organization {
+            org_str = org.clone();
+            metadata.push(("organization", &org_str));
+        }
+        let title_str;
+        if let Some(ref title) = contact.title {
+            title_str = title.clone();
+            metadata.push(("title", &title_str));
+        }
+
         let piece = crate::contacts::ingest_contact_piece(
             &mut conn,
             &vibe_path,
             &collection_id,
             &contact,
             None,
-            &[],
+            &metadata,
             &mut session,
             &index,
         )
@@ -286,13 +316,29 @@ async fn create_piece(
     } else if piece_type == "calendar" {
         let event: crate::calendar::CalendarJson =
             serde_json::from_str(&content).map_err(|e| format!("Invalid calendar JSON: {}", e))?;
+        let mut metadata = vec![
+            ("summary", event.summary.as_str()),
+            ("start_date", event.start_date.as_str()),
+            ("end_date", event.end_date.as_str()),
+        ];
+        let desc_str;
+        if let Some(ref desc) = event.description {
+            desc_str = desc.clone();
+            metadata.push(("description", &desc_str));
+        }
+        let loc_str;
+        if let Some(ref loc) = event.location {
+            loc_str = loc.clone();
+            metadata.push(("location", &loc_str));
+        }
+
         let piece = crate::calendar::ingest_calendar_piece(
             &mut conn,
             &vibe_path,
             &collection_id,
             &event,
             None,
-            &[],
+            &metadata,
             &mut session,
             &index,
         )
@@ -325,8 +371,9 @@ async fn replace_piece(
         )
         .map_err(|e| format!("Old piece not found: {}", e))?;
 
-    let index = crate::vector_index::load_or_create_index(&vibe_path, &folder_path)
-        .map_err(|e| e.to_string())?;
+    let index =
+        crate::vector_index::get_or_create_index(&vibe_path, &folder_path, &state.index_cache)
+            .map_err(|e| e.to_string())?;
 
     if col_type == "text" {
         let piece = crate::pieces::replace_piece(
@@ -443,8 +490,9 @@ async fn tombstone_piece(state: State<'_, AppState>, piece_id: String) -> Result
         )
         .map_err(|e| format!("Piece or collection not found: {}", e))?;
 
-    let index = crate::vector_index::load_or_create_index(&vibe_path, &folder_path)
-        .map_err(|e| e.to_string())?;
+    let index =
+        crate::vector_index::get_or_create_index(&vibe_path, &folder_path, &state.index_cache)
+            .map_err(|e| e.to_string())?;
 
     crate::pieces::tombstone_piece(&mut conn, &vibe_path, &piece_id, &index)
         .map_err(|e| e.to_string())
@@ -480,9 +528,15 @@ async fn search_vibe(
         top_k: limit.unwrap_or(10),
     };
 
-    let vector_results =
-        crate::vector_index::query_pieces(&conn, &vibe_path, &mut session, &query, options)
-            .map_err(|e| format!("Semantic search failed: {}", e))?;
+    let vector_results = crate::vector_index::query_pieces(
+        &conn,
+        &vibe_path,
+        &mut session,
+        &query,
+        options,
+        &state.index_cache,
+    )
+    .map_err(|e| format!("Semantic search failed: {}", e))?;
 
     let mut details = Vec::new();
     for res in vector_results {
@@ -547,8 +601,9 @@ async fn seed_demo_data(state: State<'_, AppState>) -> Result<(), String> {
         });
 
     // Ingest text pieces
-    let index_notes = crate::vector_index::load_or_create_index(&vibe_path, "notes")
-        .map_err(|e| e.to_string())?;
+    let index_notes =
+        crate::vector_index::get_or_create_index(&vibe_path, "notes", &state.index_cache)
+            .map_err(|e| e.to_string())?;
 
     let p1 = crate::pieces::ingest_text_piece(
         &mut conn,
@@ -584,8 +639,9 @@ async fn seed_demo_data(state: State<'_, AppState>) -> Result<(), String> {
     ).map_err(|e| e.to_string())?;
 
     // Ingest contacts
-    let index_contacts = crate::vector_index::load_or_create_index(&vibe_path, "contacts")
-        .map_err(|e| e.to_string())?;
+    let index_contacts =
+        crate::vector_index::get_or_create_index(&vibe_path, "contacts", &state.index_cache)
+            .map_err(|e| e.to_string())?;
 
     let contact_alice = crate::contacts::ContactJson {
         first_name: Some("Alice".to_string()),
@@ -632,8 +688,9 @@ async fn seed_demo_data(state: State<'_, AppState>) -> Result<(), String> {
     .map_err(|e| e.to_string())?;
 
     // Ingest calendar events
-    let index_calendar = crate::vector_index::load_or_create_index(&vibe_path, "calendar")
-        .map_err(|e| e.to_string())?;
+    let index_calendar =
+        crate::vector_index::get_or_create_index(&vibe_path, "calendar", &state.index_cache)
+            .map_err(|e| e.to_string())?;
 
     let event_launch = crate::calendar::CalendarJson {
         summary: "Project Alpha Launch".to_string(),
@@ -797,16 +854,20 @@ pub fn run() {
             if is_mcp {
                 // Register app state for Tauri commands using Arc<Mutex>
                 let shared_path = std::sync::Arc::new(std::sync::Mutex::new(vibe_path.clone()));
+                let shared_cache =
+                    std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
                 app.manage(AppState {
                     vibe_path: shared_path.clone(),
                     model_session: shared_session.clone(),
                     db_conn: shared_conn.clone(),
+                    index_cache: shared_cache.clone(),
                 });
 
                 // Spawn stdio loop background thread
                 let vibe_path_cloned = vibe_path.clone();
                 let mcp_session = shared_session.clone();
                 let mcp_conn = shared_conn.clone();
+                let cache_cloned = shared_cache.clone();
                 std::thread::spawn(move || {
                     let stdin = std::io::stdin();
                     let mut stdout = std::io::stdout();
@@ -821,6 +882,7 @@ pub fn run() {
                             &mut conn,
                             &mut session,
                             &line_str,
+                            &cache_cloned,
                         );
                         use std::io::Write;
                         let _ = writeln!(stdout, "{}", response);
@@ -830,17 +892,23 @@ pub fn run() {
             } else {
                 // Register app state for Tauri commands using Arc<Mutex>
                 let shared_path = std::sync::Arc::new(std::sync::Mutex::new(vibe_path.clone()));
+                let shared_cache =
+                    std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
                 app.manage(AppState {
                     vibe_path: shared_path.clone(),
                     model_session: shared_session.clone(),
                     db_conn: shared_conn.clone(),
+                    index_cache: shared_cache.clone(),
                 });
 
                 // Spawn background SSE server passing Arc<Mutex> path and connection
                 let vibe_path_cloned = shared_path.clone();
                 let db_conn_cloned = shared_conn.clone();
+                let cache_cloned = shared_cache.clone();
                 std::thread::spawn(move || {
-                    if let Err(e) = crate::sse::start_sse_server(vibe_path_cloned, db_conn_cloned) {
+                    if let Err(e) =
+                        crate::sse::start_sse_server(vibe_path_cloned, db_conn_cloned, cache_cloned)
+                    {
                         eprintln!("Failed to start SSE server: {}", e);
                     }
                 });
